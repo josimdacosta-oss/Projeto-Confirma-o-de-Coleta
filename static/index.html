@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gestão da Operação de Atendimento</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">SIGRA</span>
+      <strong>Atendimento</strong>
+    </div>
+    <nav>
+      <button class="nav active" data-view="overview">Visão Geral</button>
+      <button class="nav" data-view="imports">Importações SIGRA</button>
+      <button class="nav" data-view="base">Base de OS</button>
+      <button class="nav" data-view="attendants">Confirmações manuais</button>
+      <button class="nav" data-view="collabUnits">Acompanhamento por unidade</button>
+      <button class="nav" data-view="suppliers">Performance por Fornecedor</button>
+    </nav>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <h1>Gestão da Operação de Atendimento</h1>
+        <p id="periodLabel">Importe uma planilha SIGRA para iniciar a análise.</p>
+      </div>
+      <div class="date-filter">
+        <input id="dateFrom" type="date" aria-label="Data inicial">
+        <input id="dateTo" type="date" aria-label="Data final">
+        <button id="applyDateFilter" type="button">Filtrar</button>
+        <button id="clearDateFilter" type="button" title="Limpar filtro">×</button>
+      </div>
+      <label class="upload-button">
+        <input id="fileInput" type="file" accept=".xlsx,.xls">
+        <span>Subir planilha</span>
+      </label>
+    </header>
+
+    <section id="alerts" class="alerts hidden"></section>
+
+    <section id="overview" class="view active">
+      <div class="kpi-grid" id="kpiGrid"></div>
+      <div class="grid two">
+        <section class="panel">
+          <h2>Status gerencial</h2>
+          <div id="chartStatusGerencial" class="bar-list"></div>
+        </section>
+        <section class="panel">
+          <h2>Origem da confirmação</h2>
+          <div id="chartConfirmacao" class="bar-list"></div>
+        </section>
+      </div>
+      <div class="grid two">
+        <section class="panel">
+          <h2>Unidades</h2>
+          <div id="chartUnidades" class="bar-list"></div>
+        </section>
+        <section class="panel">
+          <h2>Tipos de resíduo</h2>
+          <div id="chartResiduos" class="bar-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="imports" class="view">
+      <section class="panel">
+        <div class="section-head">
+          <h2>Importações SIGRA</h2>
+          <label class="upload-inline">
+            <input id="fileInputSecondary" type="file" accept=".xlsx,.xls">
+            <span>Importar novo relatório</span>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Arquivo</th>
+                <th>Período</th>
+                <th>Linhas</th>
+                <th>OS únicas</th>
+                <th>Duplicidades</th>
+                <th>Ausências</th>
+                <th>Inconsistências</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="importsTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="base" class="view">
+      <section class="panel">
+        <div class="section-head">
+          <h2>Base de OS</h2>
+          <a id="exportCsv" class="export" href="/api/export/orders.csv">Exportar CSV</a>
+        </div>
+        <div class="filters">
+          <input id="searchInput" type="search" placeholder="Buscar OS, unidade, fornecedor, abertura, confirmação ou resíduo">
+          <select id="statusFilter"><option value="">Todos os status</option></select>
+          <select id="actionFilter">
+            <option value="">Todas as situações</option>
+            <option value="Sim">Precisa de ação</option>
+            <option value="Não">Sem ação pendente</option>
+          </select>
+        </div>
+        <div class="table-wrap tall">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="numero_os">OS</th>
+                <th data-sort="unidade">Unidade</th>
+                <th data-sort="regional">Regional</th>
+                <th data-sort="fornecedor">Fornecedor</th>
+                <th data-sort="tipo_residuo">Resíduo</th>
+                <th data-sort="status_original">Status SIGRA</th>
+                <th data-sort="status_gerencial">Status gerencial</th>
+                <th data-sort="origem_os">Origem OS</th>
+                <th data-sort="responsavel_abertura">Abertura</th>
+                <th data-sort="status_operacional">Coleta</th>
+                <th data-sort="origem_confirmacao">Origem confirmação</th>
+                <th data-sort="responsavel_confirmacao">Responsável confirmação</th>
+                <th data-sort="data_agendada">Agendada</th>
+                <th data-sort="data_realizacao">Realização</th>
+                <th data-sort="data_realizada">Realizada</th>
+                <th data-sort="produtividade_manual">Produtividade manual</th>
+                <th data-sort="precisa_acao">Ação</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="attendants" class="view">
+      <section class="panel">
+        <h2>Confirmações manuais por usuário</h2>
+        <div id="chartAtendentes" class="bar-list wide"></div>
+      </section>
+      <section class="panel">
+        <h2>Detalhamento das confirmações manuais</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Usuário</th><th>Total</th><th>Confirmadas</th><th>Manuais</th><th>Via MTR</th><th>Pendentes confirmação</th><th>Não realizadas</th><th>Precisam ação</th><th>Alertas</th></tr></thead>
+            <tbody id="attendantsTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Abertura de OS por responsável</h2>
+        <div id="chartAberturas" class="bar-list wide"></div>
+      </section>
+    </section>
+
+    <section id="collabUnits" class="view">
+      <section class="panel">
+        <div class="section-head">
+          <h2>Acompanhamento operacional por unidade, usuário e fornecedor</h2>
+          <p class="panel-note">Separe confirmação total da coleta e produtividade manual. O filtro selecionado recalcula todos os blocos abaixo.</p>
+        </div>
+        <div class="filters compact">
+          <label class="filter-field">Responsáveis
+            <select id="ownerFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Unidades
+            <select id="unitFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Fornecedores
+            <select id="supplierFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Usuários manuais
+            <select id="manualUserFilter" class="multi-select" multiple size="5"></select>
+          </label>
+        </div>
+        <div class="filter-actions">
+          <p class="filter-hint">Sem seleção = todos. Use Ctrl para selecionar mais de um item.</p>
+          <button id="clearOperationalFilters" type="button">Limpar filtros</button>
+        </div>
+        <div id="scopeSummary" class="scope-summary"></div>
+        <div id="unitCards" class="unit-card-grid"></div>
+      </section>
+      <section class="panel">
+        <h2>Performance por responsável operacional</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Responsável</th>
+                <th>Coletas agendadas</th>
+                <th>Confirmadas</th>
+                <th>Manuais</th>
+                <th>Via MTR</th>
+                <th>Pendentes confirmação</th>
+                <th>Não realizadas</th>
+              </tr>
+            </thead>
+            <tbody id="ownerTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Origem manual por usuário e unidade</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Usuário que confirmou</th>
+                <th>Unidade</th>
+                <th>Confirmações manuais</th>
+                <th>Realizadas confirmadas</th>
+              </tr>
+            </thead>
+            <tbody id="collabUnitTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Resumo unidade x fornecedor</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Unidade</th>
+                <th>Fornecedor</th>
+                <th>Total coletas</th>
+                <th>Total confirmadas</th>
+                <th>Manuais</th>
+                <th>Via MTR</th>
+                <th>Sem confirmação MTR</th>
+                <th>Pendência operacional</th>
+                <th>Não realizadas</th>
+              </tr>
+            </thead>
+            <tbody id="collabUnitSupplierTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Resumo por unidade</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Responsável</th>
+                <th>Unidade</th>
+                <th>Coletas agendadas</th>
+                <th>Confirmadas</th>
+                <th>Manuais</th>
+                <th>Via MTR</th>
+                <th>Pendentes confirmação</th>
+                <th>Não realizadas</th>
+              </tr>
+            </thead>
+            <tbody id="unitSummaryTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="suppliers" class="view">
+      <section class="panel">
+        <div class="section-head">
+          <h2>Painel de fornecedores</h2>
+          <p class="panel-note">Pendentes aqui significa: coletas atribuídas ao fornecedor que não foram confirmadas via MTR pelo fornecedor.</p>
+        </div>
+        <div id="supplierOverview" class="supplier-overview"></div>
+        <div id="supplierDecision" class="supplier-decision"></div>
+        <div class="segmented" id="supplierSegments">
+          <button type="button" class="active" data-supplier-filter="critical">Críticos</button>
+          <button type="button" data-supplier-filter="attention">Atenção</button>
+          <button type="button" data-supplier-filter="good">Aderentes</button>
+          <button type="button" data-supplier-filter="all">Todos</button>
+        </div>
+        <div id="supplierRanking" class="supplier-ranking"></div>
+      </section>
+      <section class="panel">
+        <h2>Resumo operacional por fornecedor</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fornecedor</th><th>Total coletas</th><th>Aderência MTR</th><th>Via MTR</th><th>Sem confirmação MTR</th><th>Confirmadas manuais</th><th>Pendência operacional</th><th>Não realizadas</th><th>Precisam ação</th><th>Recomendação</th></tr></thead>
+            <tbody id="suppliersTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="orderDialog">
+    <div class="dialog-head">
+      <h2 id="dialogTitle">Ordem de serviço</h2>
+      <button id="closeDialog" aria-label="Fechar">×</button>
+    </div>
+    <div id="orderDetail" class="detail-grid"></div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

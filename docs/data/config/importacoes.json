@@ -1,0 +1,47 @@
+[
+  {
+    "id": "baseline-2026-02-20-2026-04-19",
+    "nome": "Baseline 20/02/2026 a 19/04/2026",
+    "arquivo_nome": "Relatório ordem de serviço -Baseline 20-02 a 19-04-2026 todos os clientes.xlsx",
+    "arquivo": "data/raw/Relatório ordem de serviço -Baseline 20-02 a 19-04-2026 todos os clientes.xlsx",
+    "tipo": "baseline",
+    "cliente": "Todos",
+    "periodo_inicio": "2026-02-20",
+    "periodo_fim": "2026-04-19",
+    "competencia": "Baseline",
+    "onda": "",
+    "status": "ativa",
+    "incluido_em": "2026-07-06",
+    "observacoes": "Base histórica inicial para comparação."
+  },
+  {
+    "id": "operacional-2026-04-19-2026-07-05",
+    "nome": "Operacional 19/04/2026 a 05/07/2026",
+    "arquivo_nome": "Relatório ordem de serviço - 19-04 A 05-07 -.xlsx",
+    "arquivo": "data/raw/Relatório ordem de serviço - 19-04 A 05-07 -.xlsx",
+    "tipo": "operacional",
+    "cliente": "Todos",
+    "periodo_inicio": "2026-04-19",
+    "periodo_fim": "2026-07-05",
+    "competencia": "Operacional atual",
+    "onda": "todas",
+    "status": "ativa",
+    "incluido_em": "2026-07-06",
+    "observacoes": "Base operacional oficial compartilhada no GitHub Pages."
+  },
+  {
+    "id": "clientes-2026-07-06",
+    "nome": "Base de Clientes / Grupos Contratuais",
+    "arquivo_nome": "Relatório Clientes - 2026-07-06 09_53_22 - Clientes Ambiensys.xlsx",
+    "arquivo": "data/raw/Relatório Clientes - 2026-07-06 09_53_22 - Clientes Ambiensys.xlsx",
+    "tipo": "cadastro_clientes",
+    "cliente": "Todos",
+    "periodo_inicio": "",
+    "periodo_fim": "",
+    "competencia": "",
+    "onda": "",
+    "status": "ativa",
+    "incluido_em": "2026-07-06",
+    "observacoes": "Cadastro oficial usado para identificar grupos contratuais e unidades."
+  }
+]

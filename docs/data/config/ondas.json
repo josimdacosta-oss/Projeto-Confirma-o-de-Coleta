@@ -1,0 +1,24 @@
+[
+  {
+    "id": "onda-0-pr01",
+    "numero": "0",
+    "nome": "Piloto inicial",
+    "cliente": "Mercado Livre",
+    "competencia": "20/04/2026 a 19/05/2026",
+    "data_inicio": "2026-04-20",
+    "data_fim_prevista": "2026-05-19",
+    "status": "em_andamento",
+    "observacoes": "Piloto PR01"
+  },
+  {
+    "id": "onda-1-ampliacao",
+    "numero": "1",
+    "nome": "Ampliação inicial",
+    "cliente": "Mercado Livre",
+    "competencia": "20/05/2026 a 19/06/2026",
+    "data_inicio": "2026-05-20",
+    "data_fim_prevista": "2026-06-19",
+    "status": "em_andamento",
+    "observacoes": "Ampliação inicial Onda 1"
+  }
+]

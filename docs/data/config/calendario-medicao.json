@@ -1,0 +1,11 @@
+[
+  {
+    "id": "mercado-livre-20-19",
+    "cliente": "Mercado Livre",
+    "tipo_ciclo": "Mensal customizado",
+    "dia_inicial": 20,
+    "dia_final": 19,
+    "descricao": "A competência mensal do cliente considera o período do dia 20 ao dia 19 do mês subsequente.",
+    "status": "ativo"
+  }
+]

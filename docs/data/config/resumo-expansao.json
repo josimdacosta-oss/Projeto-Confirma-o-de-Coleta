@@ -1,0 +1,21 @@
+{
+  "projeto": "Confirmação de Coleta — Expansão Operacional",
+  "objetivo": "Ampliar a confirmação de coleta com rastreabilidade via atendente ou MTR, reduzindo pendências de contingência e elevando a qualidade operacional.",
+  "meta_cobertura_confirmacao": 85,
+  "indicadores": {
+    "cobertura_atual": "% de Coletas Confirmadas",
+    "confirmacoes_atendente": "Coletas confirmadas pelo atendente",
+    "fornecedor_mtr": "Fornecedor via MTR",
+    "pendencias_contingencia": "Pendências de contingência"
+  },
+  "historico": {
+    "fonte": "Importações SIGRA oficiais ativas",
+    "regra": "A evolução é recalculada por importação/período usando OS únicas e importações ativas."
+  },
+  "alertas_prioridade": [
+    "Unidade com maior pendência",
+    "Atendente com maior contingência",
+    "Fornecedor com menor aderência MTR",
+    "Importações com inconsistências críticas"
+  ]
+}

@@ -429,6 +429,25 @@ def init_db():
         ]:
             if name not in existing:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT")
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_orders_import ON orders(import_id);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_agendada ON orders(import_id, data_agendada);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_unidade ON orders(import_id, unidade);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_fornecedor ON orders(import_id, fornecedor);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_status_gerencial ON orders(import_id, status_gerencial);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_precisa_acao ON orders(import_id, precisa_acao);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_cadastro_match ON orders(import_id, cadastro_match);
+            CREATE INDEX IF NOT EXISTS idx_orders_cadastro_match ON orders(cadastro_match);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_grupo ON orders(import_id, grupo_contratual);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_regional_cadastral ON orders(import_id, regional_cadastral);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_carteira ON orders(import_id, carteira);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_status_unidade ON orders(import_id, status_unidade);
+            CREATE INDEX IF NOT EXISTS idx_customer_units_import_sigla ON customer_units(import_id, sigla_unidade);
+            CREATE INDEX IF NOT EXISTS idx_customer_units_import_unidade ON customer_units(import_id, unidade_normalizada);
+            CREATE INDEX IF NOT EXISTS idx_customer_imports_active ON customers_registry_imports(active, imported_at);
+            """
+        )
 
 
 def find_header_row(path: Path, sheet_name: str) -> int:
@@ -475,7 +494,22 @@ def active_customer_import_id(conn) -> str:
     return row["id"] if row else ""
 
 
-def match_customer_unit(order: dict, units: list[dict]) -> dict | None:
+def build_customer_match_index(units: list[dict]) -> dict:
+    exact: dict[str, dict] = {}
+    sigla: dict[str, list[dict]] = {}
+    for unit in units:
+        unit["_cliente_key"] = normalize_key(unit.get("cliente"))
+        unit["_grupo_key"] = normalize_key(unit.get("grupo_contratual_nome"))
+        unit_key = text(unit.get("unidade_normalizada"))
+        unit_sigla = text(unit.get("sigla_unidade"))
+        if unit_key and unit_key not in exact:
+            exact[unit_key] = unit
+        if unit_sigla:
+            sigla.setdefault(unit_sigla, []).append(unit)
+    return {"exact": exact, "sigla": sigla}
+
+
+def match_customer_unit(order: dict, units: list[dict], index: dict | None = None) -> dict | None:
     if not units:
         return None
     order_unit = text(order.get("unidade"))
@@ -483,10 +517,11 @@ def match_customer_unit(order: dict, units: list[dict]) -> dict | None:
     order_unit_key = normalize_key(order_unit)
     order_client_key = normalize_key(order_client)
     order_sigla = extract_unit_code(order_unit)
+    index = index or build_customer_match_index(units)
 
     def client_bonus(unit: dict) -> int:
-        client_key = normalize_key(unit.get("cliente"))
-        group_name_key = normalize_key(unit.get("grupo_contratual_nome"))
+        client_key = unit.get("_cliente_key") or normalize_key(unit.get("cliente"))
+        group_name_key = unit.get("_grupo_key") or normalize_key(unit.get("grupo_contratual_nome"))
         if order_client_key and (order_client_key == client_key or order_client_key == group_name_key):
             return 2
         if order_client_key and (order_client_key in client_key or order_client_key in group_name_key):
@@ -494,15 +529,20 @@ def match_customer_unit(order: dict, units: list[dict]) -> dict | None:
         return 0
 
     candidates: list[tuple[int, dict]] = []
-    for unit in units:
+    exact_match = index["exact"].get(order_unit_key)
+    if exact_match:
+        candidates.append((100 + client_bonus(exact_match), exact_match))
+    for unit in index["sigla"].get(order_sigla, []):
+        candidates.append((80 + client_bonus(unit), unit))
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    # Fallback limitado para nomes divergentes; evita travar importações grandes.
+    for unit in units[:2500]:
         unit_key = text(unit.get("unidade_normalizada"))
-        sigla = text(unit.get("sigla_unidade"))
         score = 0
-        if order_unit_key and unit_key and order_unit_key == unit_key:
-            score = 100
-        elif order_sigla and sigla and order_sigla == sigla:
-            score = 80
-        elif order_unit_key and unit_key and (order_unit_key in unit_key or unit_key in order_unit_key):
+        if order_unit_key and unit_key and (order_unit_key in unit_key or unit_key in order_unit_key):
             score = 60
         if score:
             candidates.append((score + client_bonus(unit), unit))
@@ -520,6 +560,7 @@ def enrich_orders_with_customer_base(conn, import_id: str | None = None) -> dict
         "SELECT * FROM customer_units WHERE import_id = ?",
         (active_import,),
     ).fetchall())
+    match_index = build_customer_match_index(units)
     where = ""
     params: list = []
     if import_id:
@@ -532,7 +573,7 @@ def enrich_orders_with_customer_base(conn, import_id: str | None = None) -> dict
     matched = 0
     unmatched_units: set[str] = set()
     for order in orders:
-        unit = match_customer_unit(order, units)
+        unit = match_customer_unit(order, units, match_index)
         if unit:
             matched += 1
             conn.execute(
@@ -587,6 +628,102 @@ def enrich_orders_with_customer_base(conn, import_id: str | None = None) -> dict
                 """,
                 (normalize_key(order.get("unidade")), extract_unit_code(order.get("unidade")), order["id"]),
             )
+    return {
+        "matched": matched,
+        "unmatched": len(orders) - matched,
+        "unmatched_units": sorted(unmatched_units),
+    }
+
+
+def enrich_orders_with_customer_base(conn, import_id: str | None = None) -> dict:
+    active_import = active_customer_import_id(conn)
+    if not active_import:
+        return {"matched": 0, "unmatched": 0, "unmatched_units": []}
+    units = rows_to_dicts(conn.execute(
+        "SELECT * FROM customer_units WHERE import_id = ?",
+        (active_import,),
+    ).fetchall())
+    match_index = build_customer_match_index(units)
+    where = ""
+    params: list = []
+    if import_id:
+        where = "WHERE import_id = ?"
+        params.append(import_id)
+    orders = rows_to_dicts(conn.execute(
+        f"SELECT id, cliente, unidade FROM orders {where}",
+        params,
+    ).fetchall())
+
+    matched = 0
+    unmatched_units: set[str] = set()
+    matched_updates = []
+    unmatched_updates = []
+
+    for order in orders:
+        unit = match_customer_unit(order, units, match_index)
+        if unit:
+            matched += 1
+            matched_updates.append((
+                unit.get("grupo_contratual"),
+                unit.get("grupo_contratual_codigo"),
+                unit.get("grupo_contratual_nome"),
+                unit.get("regional"),
+                unit.get("carteira"),
+                unit.get("responsavel"),
+                unit.get("status_unidade"),
+                unit.get("unidade_normalizada"),
+                unit.get("sigla_unidade"),
+                unit.get("cliente"),
+                order["id"],
+            ))
+        else:
+            unmatched_units.add(order.get("unidade") or "Não informado")
+            unmatched_updates.append((
+                normalize_key(order.get("unidade")),
+                extract_unit_code(order.get("unidade")),
+                order["id"],
+            ))
+
+    if matched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET grupo_contratual = ?,
+                grupo_contratual_codigo = ?,
+                grupo_contratual_nome = ?,
+                regional_cadastral = ?,
+                carteira = ?,
+                responsavel_cadastral = ?,
+                status_unidade = ?,
+                unidade_normalizada = ?,
+                sigla_unidade = ?,
+                cadastro_cliente = ?,
+                cadastro_match = 'Sim',
+                cadastro_alerta = ''
+            WHERE id = ?
+            """,
+            matched_updates,
+        )
+    if unmatched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET grupo_contratual = '',
+                grupo_contratual_codigo = '',
+                grupo_contratual_nome = '',
+                regional_cadastral = '',
+                carteira = '',
+                responsavel_cadastral = '',
+                status_unidade = '',
+                unidade_normalizada = ?,
+                sigla_unidade = ?,
+                cadastro_cliente = '',
+                cadastro_match = 'Não',
+                cadastro_alerta = 'Unidade sem cadastro correspondente'
+            WHERE id = ?
+            """,
+            unmatched_updates,
+        )
     return {
         "matched": matched,
         "unmatched": len(orders) - matched,
@@ -1170,7 +1307,7 @@ def unit_operational_summary(conn, scope_sql: str, scope_params: list) -> list[d
     return rows_to_dicts(rows)
 
 
-def pending_orders_by_unit(conn, scope_sql: str, scope_params: list) -> list[dict]:
+def pending_orders_by_unit(conn, scope_sql: str, scope_params: list, limit: int = 1500) -> list[dict]:
     rows = conn.execute(
         f"""
         {scope_sql}
@@ -1190,13 +1327,14 @@ def pending_orders_by_unit(conn, scope_sql: str, scope_params: list) -> list[dic
         FROM scoped_orders
         WHERE precisa_acao = 'Sim'
         ORDER BY unidade, data_agendada, numero_os
+        LIMIT ?
         """,
-        scope_params,
+        scope_params + [limit],
     ).fetchall()
     return rows_to_dicts(rows)
 
 
-def pending_confirmation_orders_by_unit(conn, scope_sql: str, scope_params: list) -> list[dict]:
+def pending_confirmation_orders_by_unit(conn, scope_sql: str, scope_params: list, limit: int = 1500) -> list[dict]:
     rows = conn.execute(
         f"""
         {scope_sql}
@@ -1216,8 +1354,9 @@ def pending_confirmation_orders_by_unit(conn, scope_sql: str, scope_params: list
         FROM scoped_orders
         WHERE {is_pending_confirmation_sql()}
         ORDER BY unidade, data_agendada, numero_os
+        LIMIT ?
         """,
-        scope_params,
+        scope_params + [limit],
     ).fetchall()
     return rows_to_dicts(rows)
 
@@ -1302,26 +1441,18 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
             },
             "charts": {
                 "status_gerencial": count_by(conn, "status_gerencial", scope_sql, scope_params),
-                "status_operacional": count_by(conn, "status_operacional", scope_sql, scope_params),
-                "status_confirmacao": count_by(conn, "status_confirmacao", scope_sql, scope_params),
-                "origem_os": count_by(conn, "origem_os", scope_sql, scope_params),
-                "origem_confirmacao": count_by(conn, "origem_confirmacao", scope_sql, scope_params),
                 "atendentes": count_manual_confirmations_by_attendant(conn, scope_sql, scope_params),
                 "aberturas": count_by(conn, "responsavel_abertura", scope_sql, scope_params),
-                "fornecedores": count_by(conn, "fornecedor", scope_sql, scope_params),
                 "unidades": count_by(conn, "unidade", scope_sql, scope_params),
                 "clientes_cadastrais": count_by(conn, "cliente", scope_sql, scope_params),
                 "grupos_contratuais": count_by(conn, "grupo_contratual", scope_sql, scope_params),
                 "regionais_cadastrais": count_by(conn, "regional_cadastral", scope_sql, scope_params),
                 "carteiras": count_by(conn, "carteira", scope_sql, scope_params),
                 "status_unidade": count_by(conn, "status_unidade", scope_sql, scope_params),
-                "residuos": count_by(conn, "tipo_residuo", scope_sql, scope_params),
-                "motivos": count_by(conn, "motivo_nao_realizacao", scope_sql, scope_params),
             },
             "performance": {
                 "atendentes": performance_by(conn, "responsavel_confirmacao", scope_sql, scope_params),
                 "aberturas": performance_by(conn, "responsavel_abertura", scope_sql, scope_params),
-                "fornecedores": performance_supplier(conn, scope_sql, scope_params),
                 "responsaveis_operacionais": performance_operational_owner(conn, scope_sql, scope_params),
                 "colaborador_unidade": performance_collaborator_unit(conn, scope_sql, scope_params),
                 "colaborador_unidade_fornecedor": performance_unit_supplier(conn, scope_sql, scope_params),

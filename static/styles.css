@@ -410,11 +410,116 @@ input[type=file] {
   padding: 12px;
 }
 .filter-field {
+  position: relative;
   display: grid;
   gap: 5px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
+}
+.is-hidden-native {
+  display: none;
+}
+.custom-multi {
+  position: relative;
+  min-width: 0;
+}
+.custom-multi-trigger {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #cfd9e4;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 650;
+}
+.custom-multi-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.custom-multi-trigger b {
+  color: var(--muted);
+}
+.custom-multi-panel {
+  display: none;
+  position: absolute;
+  z-index: 30;
+  inset: calc(100% + 6px) 0 auto 0;
+  min-width: min(420px, 92vw);
+  border: 1px solid #cfd9e4;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(23, 33, 47, .18);
+  padding: 10px;
+}
+.custom-multi.open .custom-multi-panel {
+  display: block;
+}
+.custom-multi-search {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 9px;
+  margin-bottom: 8px;
+}
+.custom-multi-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.custom-multi-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fafc;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 12px;
+}
+.custom-multi-list {
+  display: grid;
+  gap: 3px;
+  max-height: 220px;
+  overflow: auto;
+}
+.custom-multi-list label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.custom-multi-list label:hover {
+  background: #f1f5f9;
+}
+.custom-multi-list input {
+  width: 14px;
+  height: 14px;
+}
+.custom-multi-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.custom-multi-list p {
+  padding: 12px;
+  font-size: 12px;
 }
 .multi-select {
   min-height: 104px;
@@ -475,6 +580,13 @@ input[type=file] {
 }
 .scope-summary strong {
   font-size: 22px;
+}
+.scope-summary small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  margin-top: 3px;
 }
 .panel-note {
   max-width: 620px;

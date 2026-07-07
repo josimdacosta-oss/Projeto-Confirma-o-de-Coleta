@@ -44,6 +44,7 @@ async function api(path, options) {
 function activateView(view) {
   $$(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".view").forEach((section) => section.classList.toggle("active", section.id === view));
+  if (view === "settings") loadCustomerBase();
 }
 
 function applySidebarState() {
@@ -283,6 +284,7 @@ function populateMultiSelect(selector, values) {
     const option = Array.from(select.options).find((item) => item.value === value);
     if (option) option.selected = true;
   });
+  updateCustomMultiSelect(select);
 }
 
 function populateSelectFromValues(selector, values, defaultLabel) {
@@ -299,6 +301,85 @@ function clearMultiSelections(selectors) {
     const select = $(selector);
     if (!select) return;
     Array.from(select.options).forEach((option) => { option.selected = false; });
+    updateCustomMultiSelect(select);
+  });
+}
+
+function selectedSummary(select) {
+  const selected = Array.from(select.selectedOptions || []).map((option) => option.value).filter(Boolean);
+  if (!selected.length) return "Todos";
+  if (selected.length <= 2) return selected.join(", ");
+  return `${selected.slice(0, 2).join(", ")} +${selected.length - 2}`;
+}
+
+function renderCustomMultiOptions(select) {
+  const wrapper = select.nextElementSibling;
+  if (!wrapper?.classList.contains("custom-multi")) return;
+  const query = wrapper.querySelector(".custom-multi-search").value.trim().toLowerCase();
+  const list = wrapper.querySelector(".custom-multi-list");
+  const options = Array.from(select.options).filter((option) => !query || option.value.toLowerCase().includes(query));
+  list.innerHTML = options.length ? options.map((option) => `
+    <label title="${option.value}">
+      <input type="checkbox" value="${option.value}" ${option.selected ? "checked" : ""}>
+      <span>${option.value}</span>
+    </label>
+  `).join("") : `<p>Nenhum item encontrado.</p>`;
+}
+
+function updateCustomMultiSelect(select) {
+  const wrapper = select.nextElementSibling;
+  if (!wrapper?.classList.contains("custom-multi")) return;
+  wrapper.querySelector(".custom-multi-trigger span").textContent = selectedSummary(select);
+  renderCustomMultiOptions(select);
+}
+
+function initCustomMultiSelects() {
+  $$(".multi-select").forEach((select) => {
+    if (select.nextElementSibling?.classList.contains("custom-multi")) {
+      updateCustomMultiSelect(select);
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "custom-multi";
+    wrapper.innerHTML = `
+      <button type="button" class="custom-multi-trigger"><span>Todos</span><b>⌄</b></button>
+      <div class="custom-multi-panel">
+        <input class="custom-multi-search" type="search" placeholder="Buscar...">
+        <div class="custom-multi-actions">
+          <button type="button" data-action="select-visible">Selecionar todos</button>
+          <button type="button" data-action="clear">Limpar</button>
+        </div>
+        <div class="custom-multi-list"></div>
+      </div>
+    `;
+    select.insertAdjacentElement("afterend", wrapper);
+    select.classList.add("is-hidden-native");
+    wrapper.querySelector(".custom-multi-trigger").addEventListener("click", () => {
+      $$(".custom-multi.open").forEach((item) => {
+        if (item !== wrapper) item.classList.remove("open");
+      });
+      wrapper.classList.toggle("open");
+      wrapper.querySelector(".custom-multi-search").focus();
+    });
+    wrapper.querySelector(".custom-multi-search").addEventListener("input", () => renderCustomMultiOptions(select));
+    wrapper.querySelector(".custom-multi-actions").addEventListener("click", (event) => {
+      const action = event.target.dataset.action;
+      if (!action) return;
+      const visible = Array.from(wrapper.querySelectorAll(".custom-multi-list input")).map((input) => input.value);
+      Array.from(select.options).forEach((option) => {
+        if (action === "clear") option.selected = false;
+        if (action === "select-visible" && visible.includes(option.value)) option.selected = true;
+      });
+      updateCustomMultiSelect(select);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    wrapper.querySelector(".custom-multi-list").addEventListener("change", (event) => {
+      const option = Array.from(select.options).find((item) => item.value === event.target.value);
+      if (option) option.selected = event.target.checked;
+      updateCustomMultiSelect(select);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    updateCustomMultiSelect(select);
   });
 }
 
@@ -401,6 +482,9 @@ function renderCollaboratorUnit() {
   });
   const filteredOwners = aggregateBy(computedUnits, "responsavel_operacional", ["coletas_agendadas", "confirmadas", "confirmacoes_manuais", "confirmacoes_mtr", "pendentes_confirmacao", "nao_realizadas"]);
   const scopeTotals = sumRows(computedUnits, ["coletas_agendadas", "confirmadas", "confirmacoes_manuais", "confirmacoes_mtr", "pendentes_confirmacao", "pendentes_confirmacao_fornecedor"]);
+  const displayUnits = [...computedUnits]
+    .sort((a, b) => Number(b.pendentes_confirmacao || 0) - Number(a.pendentes_confirmacao || 0) || Number(b.coletas_agendadas || 0) - Number(a.coletas_agendadas || 0))
+    .slice(0, 120);
 
   $("#scopeSummary").innerHTML = `
     <article><span>Unidades no filtro</span><strong>${computedUnits.length}</strong></article>
@@ -411,6 +495,11 @@ function renderCollaboratorUnit() {
     <article class="is-warn"><span>Pendências de Contingência</span><strong>${scopeTotals.pendentes_confirmacao || 0}</strong></article>
     <article class="is-bad"><span>Sem confirmação do fornecedor via MTR</span><strong>${scopeTotals.pendentes_confirmacao_fornecedor || 0}</strong></article>
   `;
+  if (computedUnits.length > displayUnits.length) {
+    $("#scopeSummary").insertAdjacentHTML("beforeend", `
+      <article><span>Cards exibidos</span><strong>${displayUnits.length}</strong><small>de ${computedUnits.length}. Refine os filtros para ver menos unidades.</small></article>
+    `);
+  }
 
   $("#ownerTable").innerHTML = filteredOwners.map((row) => `
     <tr>
@@ -460,7 +549,7 @@ function renderCollaboratorUnit() {
     </tr>
   `).join("");
 
-  $("#unitCards").innerHTML = computedUnits.map((row) => {
+  $("#unitCards").innerHTML = displayUnits.map((row) => {
     const coletasAgendadas = row.coletas_agendadas;
     const confirmadas = row.confirmadas;
     const manuais = row.confirmacoes_manuais;
@@ -476,7 +565,7 @@ function renderCollaboratorUnit() {
     const pendingConfirmationIds = new Set(unitPendingConfirmation.map((item) => item.id));
     const scheduledPending = unitPending.filter((item) => !pendingConfirmationIds.has(item.id) && String(item.status_original || "").toUpperCase() !== "NÃO REALIZADA");
     const otherPending = unitPending.filter((item) => !pendingConfirmationIds.has(item.id) && String(item.status_original || "").toUpperCase() === "NÃO REALIZADA");
-    const pendingConfirmationText = `${unitPendingConfirmation.length} pendentes de confirmação`;
+    const pendingConfirmationText = `${row.pendentes_confirmacao || 0} pendentes de confirmação`;
     const renderPendingButtons = (items) => items.map((item) => `
       <button class="pending-os" type="button" data-order-id="${item.id}">
         <strong>OS ${item.numero_os}</strong>
@@ -874,11 +963,16 @@ async function uploadCustomerBase(input) {
 async function refreshAll() {
   await loadDashboard(currentImportId);
   await loadImports();
-  await loadCustomerBase();
   await loadOrders();
 }
 
 function wireEvents() {
+  initCustomMultiSelects();
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".custom-multi")) {
+      $$(".custom-multi.open").forEach((item) => item.classList.remove("open"));
+    }
+  });
   $$(".nav").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
   $("#sidebarToggle")?.addEventListener("click", () => {
     localStorage.setItem("sigraSidebarCollapsed", String(!document.body.classList.contains("sidebar-collapsed")));

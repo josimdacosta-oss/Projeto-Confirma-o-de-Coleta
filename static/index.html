@@ -160,6 +160,7 @@
           <select id="baseGroupFilter"><option value="">Todos os grupos contratuais</option></select>
           <select id="baseRegistryRegionalFilter"><option value="">Todas as regionais cadastrais</option></select>
           <select id="basePortfolioFilter"><option value="">Todas as carteiras</option></select>
+          <select id="baseServicePortfolioFilter"><option value="">Todos os atendimentos</option></select>
           <select id="baseUnitStatusFilter"><option value="">Todos os status de unidade</option></select>
           <select id="actionFilter">
             <option value="">Todas as situações</option>
@@ -179,6 +180,9 @@
                 <th data-sort="carteira">Carteira</th>
                 <th data-sort="sigla_unidade">Sigla</th>
                 <th data-sort="status_unidade">Status unidade</th>
+                <th data-sort="carteira_cs">CS</th>
+                <th data-sort="carteira_atendimento">Atendimento</th>
+                <th data-sort="carteira_assistente">Assistente</th>
                 <th data-sort="fornecedor">Fornecedor</th>
                 <th data-sort="tipo_residuo">Resíduo</th>
                 <th data-sort="status_original">Status SIGRA</th>
@@ -211,7 +215,7 @@
         <h2>Detalhamento das Confirmações do Atendente</h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Usuário</th><th>Total</th><th>Confirmadas</th><th>Atendente</th><th>Fornecedor via MTR</th><th>Pendências de Contingência</th><th>Não realizadas</th><th>Precisam ação</th><th>Alertas</th></tr></thead>
+            <thead><tr><th>Atendimento</th><th>CS</th><th>Assistente</th><th>Clientes</th><th>Grupos</th><th>Unidades</th><th>Fornecedores</th><th>Total OS</th><th>Atendente</th><th>Fornecedor via MTR</th><th>Pendências</th><th>% carteira</th><th>% atendente</th><th>Carga</th><th>Perfil</th></tr></thead>
             <tbody id="attendantsTable"></tbody>
           </table>
         </div>
@@ -337,6 +341,70 @@
               </tr>
             </thead>
             <tbody id="unitSummaryTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Carteiras de Atendimento</h2>
+            <p class="panel-note">Cadastre ou importe vínculos de CS, Atendimento e Assistente por cliente, grupo contratual ou unidade.</p>
+          </div>
+          <label class="upload-inline">
+            <input id="portfolioInput" type="file" accept=".xlsx,.xls">
+            <span>Importar carteira</span>
+          </label>
+        </div>
+        <div id="portfolioSummary" class="scope-summary"></div>
+        <form id="portfolioForm" class="portfolio-form">
+          <select name="link_type">
+            <option value="cliente">Cliente inteiro</option>
+            <option value="grupo_contratual">Grupo contratual</option>
+            <option value="unidade">Unidade específica</option>
+          </select>
+          <input name="razao_social" placeholder="Cliente / Razão social">
+          <input name="grupo_contratual" placeholder="Grupo contratual">
+          <input name="unidade" placeholder="Unidade">
+          <input name="sigla_unidade" placeholder="Sigla">
+          <input name="cs" placeholder="CS">
+          <input name="atendimento" placeholder="Atendimento">
+          <input name="assistente_atendimento" placeholder="Assistente">
+          <input name="analista" placeholder="Analista">
+          <select name="status">
+            <option value="Ativo">Ativo</option>
+            <option value="Inativo">Inativo</option>
+          </select>
+          <input name="start_date" type="date" title="Início da vigência">
+          <input name="end_date" type="date" title="Fim da vigência">
+          <input name="notes" placeholder="Observações">
+          <button type="submit">Salvar vínculo</button>
+        </form>
+        <div class="grid two">
+          <div>
+            <h3>Diagnóstico da Carteira</h3>
+            <div id="portfolioDiagnostics" class="diagnostics-list"></div>
+          </div>
+          <div>
+            <h3>Unidades sem carteira</h3>
+            <div id="portfolioUnmatchedUnits" class="unmatched-list"></div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tipo</th>
+                <th>Cliente</th>
+                <th>Grupo</th>
+                <th>Unidade</th>
+                <th>CS</th>
+                <th>Atendimento</th>
+                <th>Assistente</th>
+                <th>Status</th>
+                <th>Origem</th>
+              </tr>
+            </thead>
+            <tbody id="portfolioTable"></tbody>
           </table>
         </div>
       </section>

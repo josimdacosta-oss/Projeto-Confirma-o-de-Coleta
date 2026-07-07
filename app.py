@@ -23,6 +23,7 @@ DATA_DIR = ROOT / "data"
 UPLOAD_DIR = ROOT / "uploads"
 STATIC_DIR = ROOT / "static"
 DB_PATH = DATA_DIR / "sigra_atendimento.sqlite3"
+DASHBOARD_CACHE: dict[tuple[str, str, str], dict] = {}
 
 REQUIRED_COLUMNS = [
     "Número Ordem",
@@ -64,6 +65,19 @@ CUSTOMER_FIELD_ALIASES = {
     "responsavel": ["Responsável", "Responsavel", "Analista", "Atendente"],
 }
 
+PORTFOLIO_FIELD_ALIASES = {
+    "razao_social": ["RAZÃO SOCIAL:", "RAZÃO SOCIAL", "Razão Social", "Razao Social", "Cliente"],
+    "grupo_contratual": ["Grupo Contratual", "Grupo contratual", "Grupo", "Contrato"],
+    "unidade": ["Unidade", "Nome Fantasia", "Nome Resumido"],
+    "sigla_unidade": ["Sigla", "Sigla Unidade", "Código Unidade", "Codigo Unidade"],
+    "cs": ["CS", "Customer Success"],
+    "atendimento": ["ATENDIMENTO", "Atendimento", "Atendente"],
+    "assistente_atendimento": ["ASS DE ATENDIMENTO", "Ass de Atendimento", "Assistente de Atendimento", "Assistente"],
+    "analista": ["Analista"],
+    "categoria": ["Categoria", "CATEGORIA"],
+    "complexidade": ["Complexidade", "COMPLEXIDADE"],
+}
+
 
 def blank(value) -> bool:
     if value is None:
@@ -75,6 +89,10 @@ def blank(value) -> bool:
 
 def text(value) -> str:
     return "" if blank(value) else str(value).strip()
+
+
+def clear_dashboard_cache() -> None:
+    DASHBOARD_CACHE.clear()
 
 
 def dt_or_none(value):
@@ -404,6 +422,43 @@ def init_db():
                 raw_json TEXT NOT NULL,
                 FOREIGN KEY(import_id) REFERENCES customers_registry_imports(id)
             );
+
+            CREATE TABLE IF NOT EXISTS service_portfolio_imports (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                rows_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                mapped_fields_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS service_portfolios (
+                id TEXT PRIMARY KEY,
+                import_id TEXT,
+                link_type TEXT NOT NULL,
+                razao_social TEXT,
+                razao_social_normalizada TEXT,
+                cliente TEXT,
+                grupo_contratual TEXT,
+                unidade TEXT,
+                sigla_unidade TEXT,
+                cs TEXT,
+                atendimento TEXT,
+                assistente_atendimento TEXT,
+                analista TEXT,
+                categoria TEXT,
+                complexidade TEXT,
+                status TEXT NOT NULL,
+                start_date TEXT,
+                end_date TEXT,
+                source TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                raw_json TEXT,
+                FOREIGN KEY(import_id) REFERENCES service_portfolio_imports(id)
+            );
             """
         )
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
@@ -426,6 +481,13 @@ def init_db():
             "cadastro_cliente",
             "cadastro_match",
             "cadastro_alerta",
+            "carteira_cs",
+            "carteira_atendimento",
+            "carteira_assistente",
+            "carteira_analista",
+            "carteira_link_type",
+            "carteira_identificada",
+            "carteira_alerta",
         ]:
             if name not in existing:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT")
@@ -446,6 +508,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_customer_units_import_sigla ON customer_units(import_id, sigla_unidade);
             CREATE INDEX IF NOT EXISTS idx_customer_units_import_unidade ON customer_units(import_id, unidade_normalizada);
             CREATE INDEX IF NOT EXISTS idx_customer_imports_active ON customers_registry_imports(active, imported_at);
+            CREATE INDEX IF NOT EXISTS idx_service_portfolios_status_type ON service_portfolios(status, link_type);
+            CREATE INDEX IF NOT EXISTS idx_service_portfolios_cliente ON service_portfolios(status, razao_social_normalizada);
+            CREATE INDEX IF NOT EXISTS idx_service_portfolios_grupo ON service_portfolios(status, grupo_contratual);
+            CREATE INDEX IF NOT EXISTS idx_service_portfolios_unidade ON service_portfolios(status, sigla_unidade, unidade);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_carteira_atendimento ON orders(import_id, carteira_atendimento);
             """
         )
 
@@ -485,6 +552,28 @@ def read_customer_excel(path: Path) -> pd.DataFrame:
 
 def customer_column_map(columns: list[str]) -> dict[str, str]:
     return {field: pick_column(columns, aliases) for field, aliases in CUSTOMER_FIELD_ALIASES.items()}
+
+
+def find_portfolio_header_row(path: Path, sheet_name: str) -> int:
+    raw = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=30, dtype=str)
+    for index, row in raw.iterrows():
+        values = [normalize_key(value) for value in row.tolist()]
+        if any(value in {"RAZAO SOCIAL", "RAZAO SOCIAL CLIENTE", "CLIENTE"} for value in values) and "ATENDIMENTO" in values:
+            return int(index)
+    return find_header_row(path, sheet_name)
+
+
+def read_portfolio_excel(path: Path) -> pd.DataFrame:
+    excel = pd.ExcelFile(path)
+    sheet = "Proposta" if "Proposta" in excel.sheet_names else excel.sheet_names[0]
+    header_row = find_portfolio_header_row(path, sheet)
+    df = pd.read_excel(path, sheet_name=sheet, header=header_row, dtype=str).dropna(how="all").fillna("")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def portfolio_column_map(columns: list[str]) -> dict[str, str]:
+    return {field: pick_column(columns, aliases) for field, aliases in PORTFOLIO_FIELD_ALIASES.items()}
 
 
 def active_customer_import_id(conn) -> str:
@@ -790,7 +879,464 @@ def import_customer_base(path: Path, original_name: str) -> dict:
                 [[row.get(column, "") for column in columns] for row in units],
             )
         enrichment = enrich_orders_with_customer_base(conn)
+    clear_dashboard_cache()
     return customer_base_summary(extra={"last_enrichment": enrichment})
+
+
+def active_portfolio_links(conn) -> list[dict]:
+    return rows_to_dicts(conn.execute(
+        """
+        SELECT *
+        FROM service_portfolios
+        WHERE status = 'Ativo'
+          AND (start_date = '' OR start_date IS NULL OR date(start_date) <= date('now'))
+          AND (end_date = '' OR end_date IS NULL OR date(end_date) >= date('now'))
+        ORDER BY
+          CASE link_type WHEN 'unidade' THEN 1 WHEN 'grupo_contratual' THEN 2 ELSE 3 END,
+          updated_at DESC
+        """
+    ).fetchall())
+
+
+def build_portfolio_match_index(links: list[dict]) -> dict:
+    by_unit: dict[str, dict] = {}
+    by_group: dict[str, dict] = {}
+    by_client: dict[str, dict] = {}
+    for link in links:
+        link_type = text(link.get("link_type")).lower()
+        if link_type == "unidade":
+            for key in [text(link.get("sigla_unidade")), normalize_key(link.get("unidade"))]:
+                if key and key not in by_unit:
+                    by_unit[key] = link
+        elif link_type == "grupo_contratual":
+            key = text(link.get("grupo_contratual"))
+            if key and key not in by_group:
+                by_group[key] = link
+        else:
+            for key in [text(link.get("razao_social_normalizada")), normalize_key(link.get("cliente")), normalize_key(link.get("razao_social"))]:
+                if key and key not in by_client:
+                    by_client[key] = link
+    return {"unit": by_unit, "group": by_group, "client": by_client}
+
+
+def match_portfolio_link(order: dict, index: dict) -> dict | None:
+    for key in [text(order.get("sigla_unidade")), normalize_key(order.get("unidade_normalizada")), normalize_key(order.get("unidade"))]:
+        if key and key in index["unit"]:
+            return index["unit"][key]
+    group = text(order.get("grupo_contratual"))
+    if group and group in index["group"]:
+        return index["group"][group]
+    for key in [
+        normalize_key(order.get("cadastro_cliente")),
+        normalize_key(order.get("cliente")),
+        normalize_key(order.get("grupo_contratual_nome")),
+    ]:
+        if key and key in index["client"]:
+            return index["client"][key]
+    return None
+
+
+def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) -> dict:
+    links = active_portfolio_links(conn)
+    if not links:
+        return {"matched": 0, "unmatched": 0, "unmatched_units": []}
+    index = build_portfolio_match_index(links)
+    where = ""
+    params: list = []
+    if import_id:
+        where = "WHERE import_id = ?"
+        params.append(import_id)
+    orders = rows_to_dicts(conn.execute(
+        f"""
+        SELECT id, cliente, unidade, unidade_normalizada, sigla_unidade,
+               grupo_contratual, grupo_contratual_nome, cadastro_cliente
+        FROM orders {where}
+        """,
+        params,
+    ).fetchall())
+    matched = 0
+    unmatched_units: set[str] = set()
+    matched_updates = []
+    unmatched_updates = []
+    for order in orders:
+        link = match_portfolio_link(order, index)
+        if link:
+            matched += 1
+            matched_updates.append((
+                link.get("cs"),
+                link.get("atendimento"),
+                link.get("assistente_atendimento"),
+                link.get("analista"),
+                link.get("link_type"),
+                order["id"],
+            ))
+        else:
+            unmatched_units.add(order.get("unidade") or "Não informado")
+            unmatched_updates.append((order["id"],))
+    if matched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET carteira_cs = ?,
+                carteira_atendimento = ?,
+                carteira_assistente = ?,
+                carteira_analista = ?,
+                carteira_link_type = ?,
+                carteira_identificada = 'Sim',
+                carteira_alerta = ''
+            WHERE id = ?
+            """,
+            matched_updates,
+        )
+    if unmatched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET carteira_cs = '',
+                carteira_atendimento = '',
+                carteira_assistente = '',
+                carteira_analista = '',
+                carteira_link_type = '',
+                carteira_identificada = 'Não',
+                carteira_alerta = 'Carteira não identificada'
+            WHERE id = ?
+            """,
+            unmatched_updates,
+        )
+    return {"matched": matched, "unmatched": len(orders) - matched, "unmatched_units": sorted(unmatched_units)}
+
+
+def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) -> dict:
+    links = active_portfolio_links(conn)
+    if not links:
+        return {"matched": 0, "unmatched": 0, "unmatched_units": []}
+    target_sql = "import_id = ?" if import_id else "1 = 1"
+    target_params = [import_id] if import_id else []
+    conn.execute(
+        f"""
+        UPDATE orders
+        SET carteira_cs = '',
+            carteira_atendimento = '',
+            carteira_assistente = '',
+            carteira_analista = '',
+            carteira_link_type = '',
+            carteira_identificada = 'Não',
+            carteira_alerta = 'Carteira não identificada'
+        WHERE {target_sql}
+        """,
+        target_params,
+    )
+    priority = {"cliente": 1, "grupo_contratual": 2, "unidade": 3}
+    for link in sorted(links, key=lambda item: priority.get(text(item.get("link_type")).lower(), 1)):
+        link_type = text(link.get("link_type")).lower()
+        params = [
+            link.get("cs"),
+            link.get("atendimento"),
+            link.get("assistente_atendimento"),
+            link.get("analista"),
+            link_type,
+        ]
+        if link_type == "unidade":
+            sigla = text(link.get("sigla_unidade"))
+            unidade_key = normalize_key(link.get("unidade"))
+            if not sigla and not unidade_key:
+                continue
+            condition = "(sigla_unidade = ? OR unidade_normalizada = ?)"
+            params.extend([sigla, unidade_key])
+        elif link_type == "grupo_contratual":
+            group = text(link.get("grupo_contratual"))
+            if not group:
+                continue
+            condition = "grupo_contratual = ?"
+            params.append(group)
+        else:
+            razao = text(link.get("razao_social"))
+            cliente = text(link.get("cliente")) or razao
+            if not razao and not cliente:
+                continue
+            condition = """
+                (
+                    cadastro_cliente = ?
+                    OR cliente = ?
+                    OR grupo_contratual_nome = ?
+                    OR cadastro_cliente LIKE ?
+                    OR cliente LIKE ?
+                    OR grupo_contratual_nome LIKE ?
+                )
+            """
+            needle = f"%{razao or cliente}%"
+            params.extend([razao, cliente, razao, needle, needle, needle])
+        conn.execute(
+            f"""
+            UPDATE orders
+            SET carteira_cs = ?,
+                carteira_atendimento = ?,
+                carteira_assistente = ?,
+                carteira_analista = ?,
+                carteira_link_type = ?,
+                carteira_identificada = 'Sim',
+                carteira_alerta = ''
+            WHERE {target_sql} AND {condition}
+            """,
+            params[:5] + target_params + params[5:],
+        )
+    matched = conn.execute(f"SELECT COUNT(*) AS c FROM orders WHERE {target_sql} AND carteira_identificada = 'Sim'", target_params).fetchone()["c"]
+    total = conn.execute(f"SELECT COUNT(*) AS c FROM orders WHERE {target_sql}", target_params).fetchone()["c"]
+    unmatched_units = [
+        row["unidade"] for row in conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(unidade, ''), 'Não informado') AS unidade, COUNT(*) AS total
+            FROM orders
+            WHERE {target_sql} AND COALESCE(carteira_identificada, '') <> 'Sim'
+            GROUP BY unidade
+            ORDER BY total DESC, unidade
+            LIMIT 80
+            """,
+            target_params,
+        ).fetchall()
+    ]
+    return {"matched": matched, "unmatched": total - matched, "unmatched_units": unmatched_units}
+
+
+def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) -> dict:
+    links = active_portfolio_links(conn)
+    if not links:
+        return {"matched": 0, "unmatched": 0, "unmatched_units": []}
+    unit_links: dict[str, dict] = {}
+    group_links: dict[str, dict] = {}
+    client_links: list[dict] = []
+    for link in links:
+        link_type = text(link.get("link_type")).lower()
+        if link_type == "unidade":
+            for key in [text(link.get("sigla_unidade")), normalize_key(link.get("unidade"))]:
+                if key and key not in unit_links:
+                    unit_links[key] = link
+        elif link_type == "grupo_contratual":
+            key = text(link.get("grupo_contratual"))
+            if key and key not in group_links:
+                group_links[key] = link
+        else:
+            link["_keys"] = [key for key in [
+                normalize_key(link.get("razao_social")),
+                normalize_key(link.get("cliente")),
+                normalize_key(link.get("razao_social_normalizada")),
+            ] if key]
+            if link["_keys"]:
+                client_links.append(link)
+
+    where = ""
+    params: list = []
+    if import_id:
+        where = "WHERE import_id = ?"
+        params.append(import_id)
+    orders = rows_to_dicts(conn.execute(
+        f"""
+        SELECT id, cliente, unidade, unidade_normalizada, sigla_unidade,
+               grupo_contratual, grupo_contratual_nome, cadastro_cliente
+        FROM orders {where}
+        """,
+        params,
+    ).fetchall())
+    matched_updates = []
+    unmatched_updates = []
+    unmatched_units: set[str] = set()
+    for order in orders:
+        order_keys = [
+            normalize_key(order.get("cadastro_cliente")),
+            normalize_key(order.get("cliente")),
+            normalize_key(order.get("grupo_contratual_nome")),
+        ]
+        link = None
+        for key in [text(order.get("sigla_unidade")), normalize_key(order.get("unidade_normalizada")), normalize_key(order.get("unidade"))]:
+            if key and key in unit_links:
+                link = unit_links[key]
+                break
+        if not link:
+            group_key = text(order.get("grupo_contratual"))
+            link = group_links.get(group_key)
+        if not link:
+            for candidate in client_links:
+                if any(ok and ck and (ok == ck or ck in ok or ok in ck) for ok in order_keys for ck in candidate["_keys"]):
+                    link = candidate
+                    break
+        if link:
+            matched_updates.append((
+                link.get("cs"),
+                link.get("atendimento"),
+                link.get("assistente_atendimento"),
+                link.get("analista"),
+                link.get("link_type"),
+                order["id"],
+            ))
+        else:
+            unmatched_units.add(order.get("unidade") or "Não informado")
+            unmatched_updates.append((order["id"],))
+    if matched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET carteira_cs = ?,
+                carteira_atendimento = ?,
+                carteira_assistente = ?,
+                carteira_analista = ?,
+                carteira_link_type = ?,
+                carteira_identificada = 'Sim',
+                carteira_alerta = ''
+            WHERE id = ?
+            """,
+            matched_updates,
+        )
+    if unmatched_updates:
+        conn.executemany(
+            """
+            UPDATE orders
+            SET carteira_cs = '',
+                carteira_atendimento = '',
+                carteira_assistente = '',
+                carteira_analista = '',
+                carteira_link_type = '',
+                carteira_identificada = 'Não',
+                carteira_alerta = 'Carteira não identificada'
+            WHERE id = ?
+            """,
+            unmatched_updates,
+        )
+    return {"matched": len(matched_updates), "unmatched": len(unmatched_updates), "unmatched_units": sorted(unmatched_units)[:80]}
+
+
+def import_service_portfolio(path: Path, original_name: str) -> dict:
+    df = read_portfolio_excel(path)
+    mapped = portfolio_column_map(list(df.columns))
+    imported_at = datetime.now().isoformat(timespec="seconds")
+    import_id = datetime.now().strftime("%Y%m%d%H%M%S") + "-carteiras-" + uuid.uuid4().hex[:6]
+    links: list[dict] = []
+    for _, row in df.iterrows():
+        row_dict = row.to_dict()
+        razao = text(row_dict.get(mapped.get("razao_social", "")))
+        atendimento = text(row_dict.get(mapped.get("atendimento", "")))
+        cs = text(row_dict.get(mapped.get("cs", "")))
+        assistente = text(row_dict.get(mapped.get("assistente_atendimento", "")))
+        if not razao or not (atendimento or cs or assistente):
+            continue
+        grupo = text(row_dict.get(mapped.get("grupo_contratual", "")))
+        unidade = text(row_dict.get(mapped.get("unidade", "")))
+        sigla = text(row_dict.get(mapped.get("sigla_unidade", ""))) or extract_unit_code(unidade)
+        link_type = "unidade" if unidade or sigla else ("grupo_contratual" if grupo else "cliente")
+        now = datetime.now().isoformat(timespec="seconds")
+        links.append({
+            "id": uuid.uuid4().hex,
+            "import_id": import_id,
+            "link_type": link_type,
+            "razao_social": razao,
+            "razao_social_normalizada": normalize_key(razao),
+            "cliente": razao,
+            "grupo_contratual": grupo,
+            "unidade": unidade,
+            "sigla_unidade": sigla,
+            "cs": cs,
+            "atendimento": atendimento,
+            "assistente_atendimento": assistente,
+            "analista": text(row_dict.get(mapped.get("analista", ""))),
+            "categoria": text(row_dict.get(mapped.get("categoria", ""))),
+            "complexidade": text(row_dict.get(mapped.get("complexidade", ""))),
+            "status": "Ativo",
+            "start_date": "",
+            "end_date": "",
+            "source": "importado",
+            "notes": "",
+            "created_at": now,
+            "updated_at": now,
+            "raw_json": json.dumps({str(k): text(v) for k, v in row_dict.items()}, ensure_ascii=False),
+        })
+    with get_conn() as conn:
+        conn.execute("UPDATE service_portfolios SET status = 'Inativo', updated_at = ? WHERE source = 'importado'", (imported_at,))
+        conn.execute(
+            """
+            INSERT INTO service_portfolio_imports (
+                id, filename, imported_at, rows_count, status, notes, mapped_fields_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (import_id, original_name, imported_at, len(links), "Importado", "Carga inicial de carteiras", json.dumps(mapped, ensure_ascii=False)),
+        )
+        if links:
+            columns = list(links[0].keys())
+            placeholders = ", ".join(["?"] * len(columns))
+            conn.executemany(
+                f"INSERT INTO service_portfolios ({', '.join(columns)}) VALUES ({placeholders})",
+                [[row.get(column, "") for column in columns] for row in links],
+            )
+        enrichment = enrich_orders_with_service_portfolios(conn)
+    clear_dashboard_cache()
+    return service_portfolio_summary(extra={"last_enrichment": enrichment})
+
+
+def upsert_service_portfolio(payload: dict) -> dict:
+    now = datetime.now().isoformat(timespec="seconds")
+    link_id = text(payload.get("id")) or uuid.uuid4().hex
+    link_type = text(payload.get("link_type")).lower() or "cliente"
+    razao = text(payload.get("razao_social") or payload.get("cliente"))
+    values = {
+        "id": link_id,
+        "import_id": "",
+        "link_type": link_type,
+        "razao_social": razao,
+        "razao_social_normalizada": normalize_key(razao),
+        "cliente": text(payload.get("cliente")) or razao,
+        "grupo_contratual": text(payload.get("grupo_contratual")),
+        "unidade": text(payload.get("unidade")),
+        "sigla_unidade": text(payload.get("sigla_unidade")) or extract_unit_code(payload.get("unidade")),
+        "cs": text(payload.get("cs")),
+        "atendimento": text(payload.get("atendimento")),
+        "assistente_atendimento": text(payload.get("assistente_atendimento")),
+        "analista": text(payload.get("analista")),
+        "categoria": text(payload.get("categoria")),
+        "complexidade": text(payload.get("complexidade")),
+        "status": text(payload.get("status")) or "Ativo",
+        "start_date": text(payload.get("start_date")),
+        "end_date": text(payload.get("end_date")),
+        "source": "manual",
+        "notes": text(payload.get("notes")),
+        "updated_at": now,
+    }
+    with get_conn() as conn:
+        exists = conn.execute("SELECT id FROM service_portfolios WHERE id = ?", (link_id,)).fetchone()
+        if exists:
+            conn.execute(
+                """
+                UPDATE service_portfolios
+                SET link_type = ?, razao_social = ?, razao_social_normalizada = ?, cliente = ?,
+                    grupo_contratual = ?, unidade = ?, sigla_unidade = ?, cs = ?, atendimento = ?,
+                    assistente_atendimento = ?, analista = ?, categoria = ?, complexidade = ?,
+                    status = ?, start_date = ?, end_date = ?, notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    values["link_type"], values["razao_social"], values["razao_social_normalizada"], values["cliente"],
+                    values["grupo_contratual"], values["unidade"], values["sigla_unidade"], values["cs"], values["atendimento"],
+                    values["assistente_atendimento"], values["analista"], values["categoria"], values["complexidade"],
+                    values["status"], values["start_date"], values["end_date"], values["notes"], values["updated_at"], link_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO service_portfolios (
+                    id, import_id, link_type, razao_social, razao_social_normalizada, cliente,
+                    grupo_contratual, unidade, sigla_unidade, cs, atendimento, assistente_atendimento,
+                    analista, categoria, complexidade, status, start_date, end_date, source,
+                    notes, created_at, updated_at, raw_json
+                ) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, '{}')
+                """,
+                (
+                    link_id, values["link_type"], values["razao_social"], values["razao_social_normalizada"], values["cliente"],
+                    values["grupo_contratual"], values["unidade"], values["sigla_unidade"], values["cs"], values["atendimento"],
+                    values["assistente_atendimento"], values["analista"], values["categoria"], values["complexidade"],
+                    values["status"], values["start_date"], values["end_date"], values["notes"], now, values["updated_at"],
+                ),
+            )
+        enrichment = enrich_orders_with_service_portfolios(conn)
+    clear_dashboard_cache()
+    return service_portfolio_summary(extra={"last_enrichment": enrichment})
 
 
 def choose_atendente(row: dict) -> str:
@@ -926,7 +1472,9 @@ def import_excel(path: Path, original_name: str) -> dict:
                 [[order[col] for col in columns] for order in orders],
             )
         enrich_orders_with_customer_base(conn, import_id)
+        enrich_orders_with_service_portfolios(conn, import_id)
 
+    clear_dashboard_cache()
     return import_summary(import_id)
 
 
@@ -995,6 +1543,56 @@ def customer_base_summary(extra: dict | None = None) -> dict:
             "campos_mapeados": json.loads(active_dict.get("mapped_fields_json") or "{}"),
         }
         return {"active": active_dict, "imports": imports, "diagnostics": diagnostics, **(extra or {})}
+
+
+def service_portfolio_summary(extra: dict | None = None) -> dict:
+    with get_conn() as conn:
+        imports = rows_to_dicts(conn.execute(
+            "SELECT id, filename, imported_at, rows_count, status, notes FROM service_portfolio_imports ORDER BY imported_at DESC"
+        ).fetchall())
+        links = rows_to_dicts(conn.execute(
+            """
+            SELECT *
+            FROM service_portfolios
+            ORDER BY status, link_type, atendimento, razao_social
+            LIMIT 500
+            """
+        ).fetchall())
+        diagnostics = {
+            "total_vinculos": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios").fetchone()["c"],
+            "vinculos_cliente": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios WHERE link_type = 'cliente'").fetchone()["c"],
+            "vinculos_grupo": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios WHERE link_type = 'grupo_contratual'").fetchone()["c"],
+            "vinculos_unidade": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios WHERE link_type = 'unidade'").fetchone()["c"],
+            "vinculos_ativos": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios WHERE status = 'Ativo'").fetchone()["c"],
+            "vinculos_inativos": conn.execute("SELECT COUNT(*) AS c FROM service_portfolios WHERE status <> 'Ativo'").fetchone()["c"],
+            "os_com_carteira": conn.execute("SELECT COUNT(*) AS c FROM orders WHERE carteira_identificada = 'Sim'").fetchone()["c"],
+            "os_sem_carteira": conn.execute("SELECT COUNT(*) AS c FROM orders WHERE COALESCE(carteira_identificada, '') <> 'Sim'").fetchone()["c"],
+            "unidades_sem_carteira": [
+                row["unidade"] for row in conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(unidade, ''), 'Não informado') AS unidade, COUNT(*) AS total
+                    FROM orders
+                    WHERE COALESCE(carteira_identificada, '') <> 'Sim'
+                    GROUP BY unidade
+                    ORDER BY total DESC, unidade
+                    LIMIT 80
+                    """
+                ).fetchall()
+            ],
+            "duplicidades": conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM (
+                    SELECT link_type, COALESCE(NULLIF(sigla_unidade, ''), unidade, grupo_contratual, razao_social_normalizada) AS chave, COUNT(*) AS total
+                    FROM service_portfolios
+                    WHERE status = 'Ativo'
+                    GROUP BY link_type, chave
+                    HAVING total > 1
+                )
+                """
+            ).fetchone()["c"],
+        }
+        return {"imports": imports, "links": links, "diagnostics": diagnostics, **(extra or {})}
 
 
 def build_scope(query: dict) -> tuple[str, list, dict]:
@@ -1098,6 +1696,11 @@ def count_by(conn, field: str, scope_sql: str, scope_params: list, limit: int = 
         "status_unidade",
         "sigla_unidade",
         "cadastro_match",
+        "carteira_cs",
+        "carteira_atendimento",
+        "carteira_assistente",
+        "carteira_link_type",
+        "carteira_identificada",
         "tipo_residuo",
         "prazo",
         "precisa_acao",
@@ -1361,7 +1964,66 @@ def pending_confirmation_orders_by_unit(conn, scope_sql: str, scope_params: list
     return rows_to_dicts(rows)
 
 
+def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) -> list[dict]:
+    rows = conn.execute(
+        f"""
+        {scope_sql}
+        SELECT
+            COALESCE(NULLIF(carteira_atendimento, ''), 'Carteira não identificada') AS label,
+            COUNT(DISTINCT COALESCE(NULLIF(cadastro_cliente, ''), NULLIF(cliente, ''), unidade)) AS clientes,
+            COUNT(DISTINCT COALESCE(NULLIF(grupo_contratual, ''), 'Não informado')) AS grupos_contratuais,
+            COUNT(DISTINCT COALESCE(NULLIF(unidade, ''), 'Não informado')) AS unidades,
+            COUNT(DISTINCT COALESCE(NULLIF(fornecedor, ''), 'Não informado')) AS fornecedores,
+            COUNT(*) AS total_os,
+            SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS confirmadas,
+            SUM(CASE WHEN produtividade_manual = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_manuais,
+            SUM(CASE WHEN origem_confirmacao = 'Confirmada pelo fornecedor via MTR' THEN 1 ELSE 0 END) AS confirmacoes_mtr,
+            SUM(CASE WHEN {is_pending_confirmation_sql()} THEN 1 ELSE 0 END) AS pendentes_confirmacao,
+            SUM(CASE WHEN status_gerencial = 'Não realizada' THEN 1 ELSE 0 END) AS nao_realizadas,
+            MAX(COALESCE(NULLIF(carteira_cs, ''), '')) AS cs,
+            MAX(COALESCE(NULLIF(carteira_assistente, ''), '')) AS assistente_atendimento
+        FROM scoped_orders
+        GROUP BY label
+        ORDER BY total_os DESC, label
+        """
+        ,
+        scope_params,
+    ).fetchall()
+    items = rows_to_dicts(rows)
+    for item in items:
+        total = int(item.get("total_os") or 0)
+        pending = int(item.get("pendentes_confirmacao") or 0)
+        units = int(item.get("unidades") or 0)
+        groups = int(item.get("grupos_contratuais") or 0)
+        load_score = total + (units * 8) + (groups * 5) + (pending * 2)
+        if load_score >= 900:
+            load_label = "Muito alta"
+        elif load_score >= 450:
+            load_label = "Alta"
+        elif load_score >= 180:
+            load_label = "Média"
+        else:
+            load_label = "Baixa"
+        coverage = float(item["confirmadas"] or 0) / total if total else 0
+        manual = float(item["confirmacoes_manuais"] or 0) / total if total else 0
+        if coverage >= 0.85 and pending <= max(3, total * 0.05):
+            profile = "Boa performance"
+        elif coverage >= 0.65:
+            profile = "Atenção"
+        else:
+            profile = "Priorizar"
+        item["carga_score"] = round(load_score, 1)
+        item["carga_carteira"] = load_label
+        item["taxa_confirmacao_carteira"] = round(coverage * 100, 1)
+        item["taxa_confirmacao_atendente"] = round(manual * 100, 1)
+        item["perfil_performance"] = profile
+    return items
+
+
 def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> dict:
+    cache_key = (import_id or "", date_from or "", date_to or "")
+    if cache_key in DASHBOARD_CACHE:
+        return DASHBOARD_CACHE[cache_key]
     with get_conn() as conn:
         scope_sql, scope_params, scope_meta = build_scope({"import_id": import_id, "date_from": date_from, "date_to": date_to})
         import_id = scope_meta.get("import_id", import_id)
@@ -1424,7 +2086,7 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
             scope_params,
         ).fetchone()["c"]
 
-        return {
+        result = {
             "has_data": True,
             "import": imp,
             "kpis": {
@@ -1449,8 +2111,10 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
                 "regionais_cadastrais": count_by(conn, "regional_cadastral", scope_sql, scope_params),
                 "carteiras": count_by(conn, "carteira", scope_sql, scope_params),
                 "status_unidade": count_by(conn, "status_unidade", scope_sql, scope_params),
+                "carteira_atendimento": count_by(conn, "carteira_atendimento", scope_sql, scope_params),
             },
             "performance": {
+                "carteira_atendentes": performance_portfolio_attendant(conn, scope_sql, scope_params),
                 "atendentes": performance_by(conn, "responsavel_confirmacao", scope_sql, scope_params),
                 "aberturas": performance_by(conn, "responsavel_abertura", scope_sql, scope_params),
                 "responsaveis_operacionais": performance_operational_owner(conn, scope_sql, scope_params),
@@ -1461,6 +2125,8 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
                 "pendentes_confirmacao_unidade": pending_confirmation_orders_by_unit(conn, scope_sql, scope_params),
             },
         }
+        DASHBOARD_CACHE[cache_key] = result
+        return result
 
 
 def list_imports() -> list[dict]:
@@ -1485,6 +2151,7 @@ def list_orders(query: dict) -> dict:
     regional_cadastral = query.get("regional_cadastral", [""])[0].strip()
     carteira = query.get("carteira", [""])[0].strip()
     status_unidade = query.get("status_unidade", [""])[0].strip()
+    carteira_atendimento = query.get("carteira_atendimento", [""])[0].strip()
     limit = min(int(query.get("limit", ["200"])[0] or 200), 1000)
 
     with get_conn() as conn:
@@ -1496,9 +2163,9 @@ def list_orders(query: dict) -> dict:
         where = ["import_id = ?"]
         params = [import_id]
         if search:
-            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ? OR grupo_contratual LIKE ? OR regional_cadastral LIKE ? OR carteira LIKE ? OR status_unidade LIKE ? OR sigla_unidade LIKE ? OR cadastro_alerta LIKE ?)")
+            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ? OR grupo_contratual LIKE ? OR regional_cadastral LIKE ? OR carteira LIKE ? OR status_unidade LIKE ? OR sigla_unidade LIKE ? OR cadastro_alerta LIKE ? OR carteira_atendimento LIKE ? OR carteira_cs LIKE ? OR carteira_assistente LIKE ?)")
             needle = f"%{search}%"
-            params.extend([needle] * 13)
+            params.extend([needle] * 16)
         if status:
             where.append("status_gerencial = ?")
             params.append(status)
@@ -1510,6 +2177,7 @@ def list_orders(query: dict) -> dict:
             ("regional_cadastral", regional_cadastral),
             ("carteira", carteira),
             ("status_unidade", status_unidade),
+            ("carteira_atendimento", carteira_atendimento),
         ]:
             if value:
                 where.append(f"{column} = ?")
@@ -1529,7 +2197,9 @@ def list_orders(query: dict) -> dict:
                    observacoes, inconsistencias, grupo_contratual, grupo_contratual_codigo,
                    grupo_contratual_nome, regional_cadastral, carteira, responsavel_cadastral,
                    status_unidade, unidade_normalizada, sigla_unidade, cadastro_match,
-                   cadastro_alerta, import_id
+                   cadastro_alerta, carteira_cs, carteira_atendimento, carteira_assistente,
+                   carteira_analista, carteira_link_type, carteira_identificada, carteira_alerta,
+                   import_id
             FROM orders
             WHERE {where_sql}
             ORDER BY precisa_acao DESC, data_abertura DESC, numero_os DESC
@@ -1589,6 +2259,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"imports": list_imports()})
             if path == "/api/customer-base":
                 return self.send_json(customer_base_summary())
+            if path == "/api/service-portfolios":
+                return self.send_json(service_portfolio_summary())
             if path == "/api/dashboard":
                 return self.send_json(dashboard(
                     query.get("import_id", ["latest"])[0],
@@ -1617,7 +2289,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/import", "/api/customer-base/import"}:
+        if parsed.path == "/api/service-portfolios":
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                return self.send_json({"ok": True, "service_portfolios": upsert_service_portfolio(payload)})
+            except Exception as exc:
+                return self.send_error_json(str(exc), HTTPStatus.BAD_REQUEST)
+
+        if parsed.path not in {"/api/import", "/api/customer-base/import", "/api/service-portfolios/import"}:
             return self.send_error_json("Rota não encontrada", HTTPStatus.NOT_FOUND)
 
         try:
@@ -1643,6 +2323,9 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/customer-base/import":
                 summary = import_customer_base(target, safe_name)
                 self.send_json({"ok": True, "customer_base": summary})
+            elif parsed.path == "/api/service-portfolios/import":
+                summary = import_service_portfolio(target, safe_name)
+                self.send_json({"ok": True, "service_portfolios": summary})
             else:
                 summary = import_excel(target, safe_name)
                 self.send_json({"ok": True, "import": summary})

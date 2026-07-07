@@ -1,6 +1,7 @@
 let currentImportId = "latest";
 let dashboardData = null;
 let customerBaseData = null;
+let servicePortfolioData = null;
 let currentOrders = [];
 let sortState = { key: "", dir: "asc" };
 let dateFilter = { from: "", to: "" };
@@ -44,7 +45,10 @@ async function api(path, options) {
 function activateView(view) {
   $$(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".view").forEach((section) => section.classList.toggle("active", section.id === view));
-  if (view === "settings") loadCustomerBase();
+  if (view === "settings") {
+    loadCustomerBase();
+    loadServicePortfolios();
+  }
 }
 
 function applySidebarState() {
@@ -154,6 +158,29 @@ function renderPerformance(selector, rows = []) {
       <td>${pill(row.alertas)}</td>
     </tr>
   `).join("");
+}
+
+function renderPortfolioAttendants(rows = []) {
+  renderBars("#chartAtendentes", rows.map((row) => ({ label: row.label, value: Number(row.total_os || 0) })));
+  $("#attendantsTable").innerHTML = rows.map((row) => `
+    <tr class="${row.perfil_performance === "Priorizar" ? "is-bad" : row.perfil_performance === "Atenção" ? "is-mid" : "is-good"}">
+      <td>${row.label}</td>
+      <td>${row.cs || ""}</td>
+      <td>${row.assistente_atendimento || ""}</td>
+      <td>${row.clientes}</td>
+      <td>${row.grupos_contratuais}</td>
+      <td>${row.unidades}</td>
+      <td>${row.fornecedores}</td>
+      <td>${row.total_os}</td>
+      <td>${row.confirmacoes_manuais}</td>
+      <td>${row.confirmacoes_mtr}</td>
+      <td>${pill(row.pendentes_confirmacao)}</td>
+      <td><strong>${row.taxa_confirmacao_carteira}%</strong></td>
+      <td><strong>${row.taxa_confirmacao_atendente}%</strong></td>
+      <td>${row.carga_carteira}</td>
+      <td>${row.perfil_performance}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="15">Nenhuma carteira de atendimento identificada.</td></tr>`;
 }
 
 function renderSupplierPerformance(rows = []) {
@@ -277,6 +304,7 @@ function selectedValues(selector) {
 function populateMultiSelect(selector, values) {
   const select = $(selector);
   if (!select) return;
+  initCustomMultiSelect(select);
   const current = selectedValues(selector);
   const clean = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   select.innerHTML = clean.map((value) => `<option value="${value}">${value}</option>`).join("");
@@ -334,11 +362,16 @@ function updateCustomMultiSelect(select) {
 }
 
 function initCustomMultiSelects() {
-  $$(".multi-select").forEach((select) => {
-    if (select.nextElementSibling?.classList.contains("custom-multi")) {
-      updateCustomMultiSelect(select);
-      return;
-    }
+  $$(".multi-select").forEach((select) => initCustomMultiSelect(select));
+}
+
+function initCustomMultiSelect(select) {
+  if (!select) return;
+  select.classList.add("is-hidden-native");
+  if (select.nextElementSibling?.classList.contains("custom-multi")) {
+    updateCustomMultiSelect(select);
+    return;
+  }
     const wrapper = document.createElement("div");
     wrapper.className = "custom-multi";
     wrapper.innerHTML = `
@@ -380,7 +413,6 @@ function initCustomMultiSelects() {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     updateCustomMultiSelect(select);
-  });
 }
 
 function sumRows(rows, fields) {
@@ -725,9 +757,8 @@ async function loadDashboard(importId = currentImportId) {
   renderKpis(dashboardData.kpis);
   renderBars("#chartStatusGerencial", dashboardData.charts.status_gerencial);
   renderBars("#chartUnidades", dashboardData.charts.unidades);
-  renderBars("#chartAtendentes", dashboardData.charts.atendentes);
   renderBars("#chartAberturas", dashboardData.charts.aberturas);
-  renderPerformance("#attendantsTable", dashboardData.performance.atendentes);
+  renderPortfolioAttendants(dashboardData.performance.carteira_atendentes || []);
   populateMultiSelect("#clientFilter", dashboardData.performance.unidades.map((row) => row.cliente || "Não informado"));
   populateMultiSelect("#contractGroupFilter", dashboardData.performance.unidades.map((row) => row.grupo_contratual || "Não informado"));
   populateMultiSelect("#registryRegionalFilter", dashboardData.performance.unidades.map((row) => row.regional_cadastral || "Não informado"));
@@ -740,6 +771,7 @@ async function loadDashboard(importId = currentImportId) {
   populateSelectFromValues("#baseGroupFilter", dashboardData.charts.grupos_contratuais.map((row) => row.label).filter((value) => value !== "Não informado"), "Todos os grupos contratuais");
   populateSelectFromValues("#baseRegistryRegionalFilter", dashboardData.charts.regionais_cadastrais.map((row) => row.label).filter((value) => value !== "Não informado"), "Todas as regionais cadastrais");
   populateSelectFromValues("#basePortfolioFilter", dashboardData.charts.carteiras.map((row) => row.label).filter((value) => value !== "Não informado"), "Todas as carteiras");
+  populateSelectFromValues("#baseServicePortfolioFilter", dashboardData.charts.carteira_atendimento.map((row) => row.label).filter((value) => value !== "Não informado"), "Todos os atendimentos");
   populateSelectFromValues("#baseUnitStatusFilter", dashboardData.charts.status_unidade.map((row) => row.label).filter((value) => value !== "Não informado"), "Todos os status de unidade");
   renderCollaboratorUnit();
   updateStatusFilter(dashboardData.charts.status_gerencial);
@@ -783,6 +815,7 @@ async function loadOrders() {
     grupo_contratual: $("#baseGroupFilter")?.value || "",
     regional_cadastral: $("#baseRegistryRegionalFilter")?.value || "",
     carteira: $("#basePortfolioFilter")?.value || "",
+    carteira_atendimento: $("#baseServicePortfolioFilter")?.value || "",
     status_unidade: $("#baseUnitStatusFilter")?.value || "",
     action: $("#actionFilter").value,
     limit: "500",
@@ -813,6 +846,9 @@ function renderOrdersTable() {
       <td>${row.carteira || ""}</td>
       <td>${row.sigla_unidade || ""}</td>
       <td>${row.status_unidade || ""}</td>
+      <td>${row.carteira_cs || ""}</td>
+      <td>${row.carteira_atendimento || ""}</td>
+      <td>${row.carteira_assistente || ""}</td>
       <td>${row.fornecedor}</td>
       <td>${row.tipo_residuo}</td>
       <td>${row.status_original}</td>
@@ -850,6 +886,13 @@ async function openOrder(id) {
     ["Responsável cadastral", row.responsavel_cadastral],
     ["Cadastro de clientes", row.cadastro_match],
     ["Alerta cadastral", row.cadastro_alerta],
+    ["CS da carteira", row.carteira_cs],
+    ["Atendimento responsável", row.carteira_atendimento],
+    ["Assistente de Atendimento", row.carteira_assistente],
+    ["Analista da carteira", row.carteira_analista],
+    ["Tipo de vínculo da carteira", row.carteira_link_type],
+    ["Carteira identificada", row.carteira_identificada],
+    ["Alerta da carteira", row.carteira_alerta],
     ["Fornecedor", row.fornecedor],
     ["Tipo de resíduo", row.tipo_residuo],
     ["MTR", row.mtr],
@@ -960,6 +1003,87 @@ async function uploadCustomerBase(input) {
   }
 }
 
+function renderServicePortfolios(payload = {}) {
+  servicePortfolioData = payload;
+  const diagnostics = payload.diagnostics || {};
+  const summary = $("#portfolioSummary");
+  if (!summary) return;
+  summary.innerHTML = `
+    <article><span>Vínculos</span><strong>${diagnostics.total_vinculos || 0}</strong></article>
+    <article><span>Cliente</span><strong>${diagnostics.vinculos_cliente || 0}</strong></article>
+    <article><span>Grupo</span><strong>${diagnostics.vinculos_grupo || 0}</strong></article>
+    <article><span>Unidade</span><strong>${diagnostics.vinculos_unidade || 0}</strong></article>
+    <article><span>OS com carteira</span><strong>${diagnostics.os_com_carteira || 0}</strong></article>
+    <article class="is-warn"><span>OS sem carteira</span><strong>${diagnostics.os_sem_carteira || 0}</strong></article>
+  `;
+  $("#portfolioDiagnostics").innerHTML = `
+    <div><span>Vínculos ativos</span><strong>${diagnostics.vinculos_ativos || 0}</strong></div>
+    <div><span>Vínculos inativos</span><strong>${diagnostics.vinculos_inativos || 0}</strong></div>
+    <div><span>Possíveis duplicidades</span><strong>${diagnostics.duplicidades || 0}</strong></div>
+    <div><span>Importações de carteira</span><strong>${(payload.imports || []).length}</strong></div>
+  `;
+  const unmatched = diagnostics.unidades_sem_carteira || [];
+  $("#portfolioUnmatchedUnits").innerHTML = unmatched.length
+    ? unmatched.map((unit) => `<span>${unit}</span>`).join("")
+    : `<p>Todas as OS têm carteira identificada ou ainda não há base importada.</p>`;
+  $("#portfolioTable").innerHTML = (payload.links || []).map((row) => `
+    <tr>
+      <td>${row.link_type}</td>
+      <td>${row.razao_social || row.cliente || ""}</td>
+      <td>${row.grupo_contratual || ""}</td>
+      <td>${row.unidade || row.sigla_unidade || ""}</td>
+      <td>${row.cs || ""}</td>
+      <td>${row.atendimento || ""}</td>
+      <td>${row.assistente_atendimento || ""}</td>
+      <td>${pill(row.status)}</td>
+      <td>${row.source || ""}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="9">Nenhum vínculo de carteira cadastrado.</td></tr>`;
+}
+
+async function loadServicePortfolios() {
+  renderServicePortfolios(await api("/api/service-portfolios"));
+}
+
+async function uploadServicePortfolio(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  showAlert("Importando carteira de atendimento e cruzando com as OS...");
+  try {
+    const payload = await api("/api/service-portfolios/import", { method: "POST", body: form });
+    renderServicePortfolios(payload.service_portfolios);
+    await loadDashboard(currentImportId);
+    await loadOrders();
+    showAlert("Carteira de atendimento importada e aplicada às OS.");
+  } catch (error) {
+    showAlert(error.message, "error");
+  } finally {
+    input.value = "";
+  }
+}
+
+async function saveServicePortfolio(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+  showAlert("Salvando vínculo de carteira...");
+  try {
+    const payload = await api("/api/service-portfolios", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    renderServicePortfolios(payload.service_portfolios);
+    await loadDashboard(currentImportId);
+    await loadOrders();
+    event.currentTarget.reset();
+    showAlert("Vínculo de carteira salvo e aplicado às OS.");
+  } catch (error) {
+    showAlert(error.message, "error");
+  }
+}
+
 async function refreshAll() {
   await loadDashboard(currentImportId);
   await loadImports();
@@ -981,11 +1105,14 @@ function wireEvents() {
   $("#fileInput").addEventListener("change", (event) => uploadFile(event.target));
   $("#fileInputSecondary").addEventListener("change", (event) => uploadFile(event.target));
   $("#clientBaseInput")?.addEventListener("change", (event) => uploadCustomerBase(event.target));
+  $("#portfolioInput")?.addEventListener("change", (event) => uploadServicePortfolio(event.target));
+  $("#portfolioForm")?.addEventListener("submit", saveServicePortfolio);
   $("#searchInput").addEventListener("input", () => loadOrders());
   $("#statusFilter").addEventListener("change", () => loadOrders());
   $("#baseGroupFilter")?.addEventListener("change", () => loadOrders());
   $("#baseRegistryRegionalFilter")?.addEventListener("change", () => loadOrders());
   $("#basePortfolioFilter")?.addEventListener("change", () => loadOrders());
+  $("#baseServicePortfolioFilter")?.addEventListener("change", () => loadOrders());
   $("#baseUnitStatusFilter")?.addEventListener("change", () => loadOrders());
   $("#actionFilter").addEventListener("change", () => loadOrders());
   $("#clientFilter")?.addEventListener("change", () => renderCollaboratorUnit());

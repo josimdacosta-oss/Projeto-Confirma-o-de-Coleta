@@ -157,6 +157,10 @@
         <div class="filters">
           <input id="searchInput" type="search" placeholder="Buscar OS, unidade, fornecedor, abertura, confirmação ou resíduo">
           <select id="statusFilter"><option value="">Todos os status</option></select>
+          <select id="baseGroupFilter"><option value="">Todos os grupos contratuais</option></select>
+          <select id="baseRegistryRegionalFilter"><option value="">Todas as regionais cadastrais</option></select>
+          <select id="basePortfolioFilter"><option value="">Todas as carteiras</option></select>
+          <select id="baseUnitStatusFilter"><option value="">Todos os status de unidade</option></select>
           <select id="actionFilter">
             <option value="">Todas as situações</option>
             <option value="Sim">Precisa de ação</option>
@@ -170,6 +174,11 @@
                 <th data-sort="numero_os">OS</th>
                 <th data-sort="unidade">Unidade</th>
                 <th data-sort="regional">Regional</th>
+                <th data-sort="grupo_contratual">Grupo contratual</th>
+                <th data-sort="regional_cadastral">Regional cadastral</th>
+                <th data-sort="carteira">Carteira</th>
+                <th data-sort="sigla_unidade">Sigla</th>
+                <th data-sort="status_unidade">Status unidade</th>
                 <th data-sort="fornecedor">Fornecedor</th>
                 <th data-sort="tipo_residuo">Resíduo</th>
                 <th data-sort="status_original">Status SIGRA</th>
@@ -220,6 +229,18 @@
           <p class="panel-note">Separe confirmação total da coleta e produtividade manual. O filtro selecionado recalcula todos os blocos abaixo.</p>
         </div>
         <div class="filters compact">
+          <label class="filter-field">Cliente
+            <select id="clientFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Grupo contratual
+            <select id="contractGroupFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Regional cadastral
+            <select id="registryRegionalFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Carteira
+            <select id="portfolioFilter" class="multi-select" multiple size="5"></select>
+          </label>
           <label class="filter-field">Responsáveis
             <select id="ownerFilter" class="multi-select" multiple size="5"></select>
           </label>
@@ -231,6 +252,9 @@
           </label>
           <label class="filter-field">Usuários atendentes
             <select id="manualUserFilter" class="multi-select" multiple size="5"></select>
+          </label>
+          <label class="filter-field">Status unidade
+            <select id="unitStatusFilter" class="multi-select" multiple size="5"></select>
           </label>
         </div>
         <div class="filter-actions">
@@ -319,9 +343,46 @@
     </section>
 
     <section id="settings" class="view">
-      <section class="panel placeholder-page">
+      <section class="panel">
         <h2>Configurações</h2>
         <p>Esta tela será usada para configurar calendário de medição, clientes, ondas, regras de criticidade, de/para de unidades e parâmetros do projeto.</p>
+      </section>
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Base de Clientes e Grupos Contratuais</h2>
+            <p class="panel-note">Importe a planilha de clientes do SIGRA para enriquecer as OS com grupo contratual, regional, carteira e status da unidade.</p>
+          </div>
+          <label class="upload-inline">
+            <input id="clientBaseInput" type="file" accept=".xlsx,.xls">
+            <span>Importar base de clientes</span>
+          </label>
+        </div>
+        <div id="clientBaseSummary" class="scope-summary"></div>
+        <div class="grid two">
+          <div>
+            <h3>Diagnóstico da Base de Clientes</h3>
+            <div id="clientBaseDiagnostics" class="diagnostics-list"></div>
+          </div>
+          <div>
+            <h3>Unidades sem correspondência</h3>
+            <div id="unmatchedUnits" class="unmatched-list"></div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Arquivo</th>
+                <th>Linhas</th>
+                <th>Status</th>
+                <th>Ativa</th>
+              </tr>
+            </thead>
+            <tbody id="clientBaseImportsTable"></tbody>
+          </table>
+        </div>
       </section>
     </section>
   </main>

@@ -1,5 +1,6 @@
 let currentImportId = "latest";
 let dashboardData = null;
+let customerBaseData = null;
 let currentOrders = [];
 let sortState = { key: "", dir: "asc" };
 let dateFilter = { from: "", to: "" };
@@ -274,12 +275,30 @@ function selectedValues(selector) {
 
 function populateMultiSelect(selector, values) {
   const select = $(selector);
+  if (!select) return;
   const current = selectedValues(selector);
   const clean = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   select.innerHTML = clean.map((value) => `<option value="${value}">${value}</option>`).join("");
   current.filter((value) => clean.includes(value)).forEach((value) => {
     const option = Array.from(select.options).find((item) => item.value === value);
     if (option) option.selected = true;
+  });
+}
+
+function populateSelectFromValues(selector, values, defaultLabel) {
+  const select = $(selector);
+  if (!select) return;
+  const current = select.value;
+  const clean = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  select.innerHTML = `<option value="">${defaultLabel}</option>` + clean.map((value) => `<option value="${value}">${value}</option>`).join("");
+  select.value = clean.includes(current) ? current : "";
+}
+
+function clearMultiSelections(selectors) {
+  selectors.forEach((selector) => {
+    const select = $(selector);
+    if (!select) return;
+    Array.from(select.options).forEach((option) => { option.selected = false; });
   });
 }
 
@@ -310,6 +329,11 @@ function renderCollaboratorUnit() {
   const units = dashboardData?.performance?.unidades || [];
   const pending = dashboardData?.performance?.pendencias_unidade || [];
   const pendingConfirmation = dashboardData?.performance?.pendentes_confirmacao_unidade || [];
+  const clients = selectedValues("#clientFilter");
+  const groups = selectedValues("#contractGroupFilter");
+  const registryRegionals = selectedValues("#registryRegionalFilter");
+  const portfolios = selectedValues("#portfolioFilter");
+  const unitStatuses = selectedValues("#unitStatusFilter");
   const owners = selectedValues("#ownerFilter");
   const selectedUnits = selectedValues("#unitFilter");
   const suppliers = selectedValues("#supplierFilter");
@@ -317,12 +341,22 @@ function renderCollaboratorUnit() {
   const hasAny = (selected, value) => !selected.length || selected.includes(value);
   const unitOwner = new Map(units.map((row) => [row.unidade, row.responsavel_operacional]));
   const ownerUnitScope = units.filter((row) => (
+    hasAny(clients, row.cliente || "Não informado") &&
+    hasAny(groups, row.grupo_contratual || "Não informado") &&
+    hasAny(registryRegionals, row.regional_cadastral || "Não informado") &&
+    hasAny(portfolios, row.carteira || "Não informado") &&
+    hasAny(unitStatuses, row.status_unidade || "Não informado") &&
     hasAny(owners, row.responsavel_operacional) &&
     hasAny(selectedUnits, row.unidade)
   ));
   const ownerUnitNames = new Set(ownerUnitScope.map((row) => row.unidade));
   const supplierScopedRows = supplierRows.filter((row) => (
     ownerUnitNames.has(row.unidade) &&
+    hasAny(clients, row.cliente || "Não informado") &&
+    hasAny(groups, row.grupo_contratual || "Não informado") &&
+    hasAny(registryRegionals, row.regional_cadastral || "Não informado") &&
+    hasAny(portfolios, row.carteira || "Não informado") &&
+    hasAny(unitStatuses, row.status_unidade || "Não informado") &&
     hasAny(suppliers, row.fornecedor)
   ));
   const unitsMatchingSupplier = new Set(supplierScopedRows.map((row) => row.unidade));
@@ -373,6 +407,7 @@ function renderCollaboratorUnit() {
     <article><span>Coletas</span><strong>${scopeTotals.coletas_agendadas || 0}</strong></article>
     <article><span>Confirmadas</span><strong>${scopeTotals.confirmadas || 0}</strong></article>
     <article><span>Atendente</span><strong>${scopeTotals.confirmacoes_manuais || 0}</strong></article>
+    <article><span>Grupos contratuais</span><strong>${new Set(computedUnits.map((row) => row.grupo_contratual).filter(Boolean)).size}</strong></article>
     <article class="is-warn"><span>Pendências de Contingência</span><strong>${scopeTotals.pendentes_confirmacao || 0}</strong></article>
     <article class="is-bad"><span>Sem confirmação do fornecedor via MTR</span><strong>${scopeTotals.pendentes_confirmacao_fornecedor || 0}</strong></article>
   `;
@@ -463,6 +498,11 @@ function renderCollaboratorUnit() {
           <span class="status-chip">${performanceLabel(cardClass)}</span>
         </div>
         <div class="unit-owner">${row.responsavel_operacional}</div>
+        <div class="unit-registry">
+          <span>${row.grupo_contratual || "Grupo não informado"}</span>
+          <span>${row.regional_cadastral || "Regional não informada"}</span>
+          <span>${row.status_unidade || "Status cadastral não informado"}</span>
+        </div>
         <div class="card-metric">
           <div>
           <span>% de Coletas Confirmadas</span>
@@ -599,10 +639,19 @@ async function loadDashboard(importId = currentImportId) {
   renderBars("#chartAtendentes", dashboardData.charts.atendentes);
   renderBars("#chartAberturas", dashboardData.charts.aberturas);
   renderPerformance("#attendantsTable", dashboardData.performance.atendentes);
+  populateMultiSelect("#clientFilter", dashboardData.performance.unidades.map((row) => row.cliente || "Não informado"));
+  populateMultiSelect("#contractGroupFilter", dashboardData.performance.unidades.map((row) => row.grupo_contratual || "Não informado"));
+  populateMultiSelect("#registryRegionalFilter", dashboardData.performance.unidades.map((row) => row.regional_cadastral || "Não informado"));
+  populateMultiSelect("#portfolioFilter", dashboardData.performance.unidades.map((row) => row.carteira || "Não informado"));
+  populateMultiSelect("#unitStatusFilter", dashboardData.performance.unidades.map((row) => row.status_unidade || "Não informado"));
   populateMultiSelect("#ownerFilter", dashboardData.performance.responsaveis_operacionais.map((row) => row.label));
   populateMultiSelect("#unitFilter", dashboardData.performance.unidades.map((row) => row.unidade));
   populateMultiSelect("#supplierFilter", dashboardData.performance.colaborador_unidade_fornecedor.map((row) => row.fornecedor));
   populateMultiSelect("#manualUserFilter", dashboardData.performance.colaborador_unidade.map((row) => row.colaborador));
+  populateSelectFromValues("#baseGroupFilter", dashboardData.charts.grupos_contratuais.map((row) => row.label).filter((value) => value !== "Não informado"), "Todos os grupos contratuais");
+  populateSelectFromValues("#baseRegistryRegionalFilter", dashboardData.charts.regionais_cadastrais.map((row) => row.label).filter((value) => value !== "Não informado"), "Todas as regionais cadastrais");
+  populateSelectFromValues("#basePortfolioFilter", dashboardData.charts.carteiras.map((row) => row.label).filter((value) => value !== "Não informado"), "Todas as carteiras");
+  populateSelectFromValues("#baseUnitStatusFilter", dashboardData.charts.status_unidade.map((row) => row.label).filter((value) => value !== "Não informado"), "Todos os status de unidade");
   renderCollaboratorUnit();
   updateStatusFilter(dashboardData.charts.status_gerencial);
 
@@ -642,6 +691,10 @@ async function loadOrders() {
     import_id: currentImportId,
     search: $("#searchInput").value,
     status: $("#statusFilter").value,
+    grupo_contratual: $("#baseGroupFilter")?.value || "",
+    regional_cadastral: $("#baseRegistryRegionalFilter")?.value || "",
+    carteira: $("#basePortfolioFilter")?.value || "",
+    status_unidade: $("#baseUnitStatusFilter")?.value || "",
     action: $("#actionFilter").value,
     limit: "500",
   });
@@ -666,6 +719,11 @@ function renderOrdersTable() {
       <td>${row.numero_os}</td>
       <td>${row.unidade}</td>
       <td>${row.regional}</td>
+      <td>${row.grupo_contratual || ""}</td>
+      <td>${row.regional_cadastral || ""}</td>
+      <td>${row.carteira || ""}</td>
+      <td>${row.sigla_unidade || ""}</td>
+      <td>${row.status_unidade || ""}</td>
       <td>${row.fornecedor}</td>
       <td>${row.tipo_residuo}</td>
       <td>${row.status_original}</td>
@@ -694,6 +752,15 @@ async function openOrder(id) {
     ["Cliente", row.cliente],
     ["Unidade", row.unidade],
     ["Regional", row.regional],
+    ["Grupo contratual", row.grupo_contratual],
+    ["Regional cadastral", row.regional_cadastral],
+    ["Carteira", row.carteira],
+    ["Unidade normalizada", row.unidade_normalizada],
+    ["Sigla da unidade", row.sigla_unidade],
+    ["Status da unidade", row.status_unidade],
+    ["Responsável cadastral", row.responsavel_cadastral],
+    ["Cadastro de clientes", row.cadastro_match],
+    ["Alerta cadastral", row.cadastro_alerta],
     ["Fornecedor", row.fornecedor],
     ["Tipo de resíduo", row.tipo_residuo],
     ["MTR", row.mtr],
@@ -745,9 +812,69 @@ async function uploadFile(input) {
   }
 }
 
+function renderCustomerBase(payload = {}) {
+  customerBaseData = payload;
+  const active = payload.active;
+  const diagnostics = payload.diagnostics || {};
+  const summary = $("#clientBaseSummary");
+  if (!summary) return;
+  summary.innerHTML = `
+    <article><span>Base ativa</span><strong>${active ? "Sim" : "Não"}</strong></article>
+    <article><span>Linhas lidas</span><strong>${diagnostics.rows_count || 0}</strong></article>
+    <article><span>Clientes</span><strong>${diagnostics.clientes || 0}</strong></article>
+    <article><span>Unidades</span><strong>${diagnostics.unidades || 0}</strong></article>
+    <article><span>Grupos contratuais</span><strong>${diagnostics.grupos_contratuais || 0}</strong></article>
+    <article><span>OS com match</span><strong>${diagnostics.os_com_match || 0}</strong></article>
+    <article class="is-warn"><span>OS sem match</span><strong>${diagnostics.os_sem_match || 0}</strong></article>
+  `;
+  $("#clientBaseDiagnostics").innerHTML = active ? `
+    <div><span>Arquivo</span><strong>${active.filename}</strong></div>
+    <div><span>Importado em</span><strong>${fmtDateTime(active.imported_at)}</strong></div>
+    <div><span>Status</span><strong>${active.status}</strong></div>
+    <div><span>Campos mapeados</span><strong>${Object.entries(diagnostics.campos_mapeados || {}).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`).join(" · ") || "Nenhum campo mapeado"}</strong></div>
+  ` : `<p>Nenhuma base de clientes importada.</p>`;
+  const unmatched = diagnostics.unidades_sem_match || [];
+  $("#unmatchedUnits").innerHTML = unmatched.length
+    ? unmatched.map((unit) => `<span>${unit}</span>`).join("")
+    : `<p>Todas as unidades das OS têm correspondência ou ainda não há OS para cruzar.</p>`;
+  $("#clientBaseImportsTable").innerHTML = (payload.imports || []).map((item) => `
+    <tr>
+      <td>${fmtDateTime(item.imported_at)}</td>
+      <td>${item.filename}</td>
+      <td>${item.rows_count}</td>
+      <td>${pill(item.status)}</td>
+      <td>${item.active ? "Sim" : "Não"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5">Nenhuma importação de clientes realizada.</td></tr>`;
+}
+
+async function loadCustomerBase() {
+  renderCustomerBase(await api("/api/customer-base"));
+}
+
+async function uploadCustomerBase(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  showAlert("Importando base de clientes e cruzando com as OS...");
+  try {
+    const payload = await api("/api/customer-base/import", { method: "POST", body: form });
+    renderCustomerBase(payload.customer_base);
+    await loadDashboard(currentImportId);
+    await loadOrders();
+    showAlert("Base de clientes importada e OS enriquecidas com sucesso.");
+  } catch (error) {
+    showAlert(error.message, "error");
+  } finally {
+    input.value = "";
+  }
+}
+
 async function refreshAll() {
   await loadDashboard(currentImportId);
   await loadImports();
+  await loadCustomerBase();
   await loadOrders();
 }
 
@@ -759,17 +886,35 @@ function wireEvents() {
   });
   $("#fileInput").addEventListener("change", (event) => uploadFile(event.target));
   $("#fileInputSecondary").addEventListener("change", (event) => uploadFile(event.target));
+  $("#clientBaseInput")?.addEventListener("change", (event) => uploadCustomerBase(event.target));
   $("#searchInput").addEventListener("input", () => loadOrders());
   $("#statusFilter").addEventListener("change", () => loadOrders());
+  $("#baseGroupFilter")?.addEventListener("change", () => loadOrders());
+  $("#baseRegistryRegionalFilter")?.addEventListener("change", () => loadOrders());
+  $("#basePortfolioFilter")?.addEventListener("change", () => loadOrders());
+  $("#baseUnitStatusFilter")?.addEventListener("change", () => loadOrders());
   $("#actionFilter").addEventListener("change", () => loadOrders());
+  $("#clientFilter")?.addEventListener("change", () => renderCollaboratorUnit());
+  $("#contractGroupFilter")?.addEventListener("change", () => renderCollaboratorUnit());
+  $("#registryRegionalFilter")?.addEventListener("change", () => renderCollaboratorUnit());
+  $("#portfolioFilter")?.addEventListener("change", () => renderCollaboratorUnit());
   $("#ownerFilter").addEventListener("change", () => renderCollaboratorUnit());
   $("#unitFilter").addEventListener("change", () => renderCollaboratorUnit());
   $("#supplierFilter").addEventListener("change", () => renderCollaboratorUnit());
   $("#manualUserFilter").addEventListener("change", () => renderCollaboratorUnit());
+  $("#unitStatusFilter")?.addEventListener("change", () => renderCollaboratorUnit());
   $("#clearOperationalFilters").addEventListener("click", () => {
-    ["#ownerFilter", "#unitFilter", "#supplierFilter", "#manualUserFilter"].forEach((selector) => {
-      Array.from($(selector).options).forEach((option) => { option.selected = false; });
-    });
+    clearMultiSelections([
+      "#clientFilter",
+      "#contractGroupFilter",
+      "#registryRegionalFilter",
+      "#portfolioFilter",
+      "#ownerFilter",
+      "#unitFilter",
+      "#supplierFilter",
+      "#manualUserFilter",
+      "#unitStatusFilter",
+    ]);
     renderCollaboratorUnit();
   });
   $("#applyDateFilter").addEventListener("click", async () => {

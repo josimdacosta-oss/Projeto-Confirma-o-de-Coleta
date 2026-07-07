@@ -51,6 +51,19 @@ DATE_COLUMNS = [
     "Data Não Realizada",
 ]
 
+CUSTOMER_FIELD_ALIASES = {
+    "grupo_contratual": ["Grupo Contratual", "Grupo contratual", "Grupo", "Contrato"],
+    "codigo_cliente": ["Código Cliente", "Codigo Cliente", "Código", "Codigo"],
+    "cnpj": ["CPF/CNPJ", "CNPJ", "CPF CNPJ", "Documento"],
+    "cliente": ["Nome/Razão Social", "Nome Razão Social", "Razão Social", "Cliente"],
+    "unidade": ["Nome Resumido", "Nome Fantasia", "Unidade", "Cliente"],
+    "status_unidade": ["Status", "Status da unidade"],
+    "cidade": ["Munícipio", "Município", "Cidade"],
+    "estado": ["UF", "Estado"],
+    "carteira": ["Carteira", "Segmento", "Operação"],
+    "responsavel": ["Responsável", "Responsavel", "Analista", "Atendente"],
+}
+
 
 def blank(value) -> bool:
     if value is None:
@@ -121,6 +134,46 @@ def normalized_blob(*values) -> str:
     for old, new in replacements.items():
         blob = blob.replace(old, new)
     return blob
+
+
+def normalize_key(value: str) -> str:
+    normalized = normalized_blob(value)
+    normalized = re.sub(r"[^A-Z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def only_digits(value: str) -> str:
+    return re.sub(r"\D+", "", text(value))
+
+
+def extract_unit_code(value: str) -> str:
+    normalized = normalize_key(value)
+    if not normalized:
+        return ""
+    matches = re.findall(r"\b(?:PR|SC|SP|RJ|SSP|XSP|RC|SRJ|SPI|SPC)[A-Z0-9]*\d{1,3}\b", normalized)
+    if matches:
+        return matches[-1]
+    tokens = normalized.split()
+    return tokens[-1] if tokens else ""
+
+
+def split_group_contract(value: str) -> tuple[str, str]:
+    raw = text(value)
+    if not raw:
+        return "", ""
+    match = re.match(r"^\s*(\d+)\s*[-–]\s*(.+)$", raw)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return "", raw
+
+
+def pick_column(columns: list[str], aliases: list[str]) -> str:
+    normalized = {normalize_key(column): column for column in columns}
+    for alias in aliases:
+        found = normalized.get(normalize_key(alias))
+        if found:
+            return found
+    return ""
 
 
 def is_robo_programada(row: dict) -> bool:
@@ -319,6 +372,38 @@ def init_db():
                 raw_json TEXT NOT NULL,
                 FOREIGN KEY(import_id) REFERENCES imports(id)
             );
+
+            CREATE TABLE IF NOT EXISTS customers_registry_imports (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                rows_count INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                notes TEXT,
+                mapped_fields_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS customer_units (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                import_id TEXT NOT NULL,
+                cliente TEXT,
+                unidade TEXT,
+                unidade_normalizada TEXT,
+                sigla_unidade TEXT,
+                grupo_contratual TEXT,
+                grupo_contratual_codigo TEXT,
+                grupo_contratual_nome TEXT,
+                regional TEXT,
+                carteira TEXT,
+                responsavel TEXT,
+                status_unidade TEXT,
+                cnpj TEXT,
+                cidade TEXT,
+                estado TEXT,
+                raw_json TEXT NOT NULL,
+                FOREIGN KEY(import_id) REFERENCES customers_registry_imports(id)
+            );
             """
         )
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
@@ -329,6 +414,18 @@ def init_db():
             "origem_confirmacao",
             "responsavel_confirmacao",
             "produtividade_manual",
+            "grupo_contratual",
+            "grupo_contratual_codigo",
+            "grupo_contratual_nome",
+            "regional_cadastral",
+            "carteira",
+            "responsavel_cadastral",
+            "status_unidade",
+            "unidade_normalizada",
+            "sigla_unidade",
+            "cadastro_cliente",
+            "cadastro_match",
+            "cadastro_alerta",
         ]:
             if name not in existing:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT")
@@ -347,6 +444,216 @@ def read_sigra_excel(path: Path) -> pd.DataFrame:
     df = pd.read_excel(path, sheet_name=sheet, header=header_row).dropna(how="all")
     df.columns = [str(c).strip() for c in df.columns]
     return df
+
+
+def find_customer_header_row(path: Path, sheet_name: str) -> int:
+    raw = pd.read_excel(path, sheet_name=sheet_name, header=None, nrows=30, dtype=str)
+    for index, row in raw.iterrows():
+        values = [normalize_key(value) for value in row.tolist()]
+        if "GRUPO CONTRATUAL" in values and ("CPF CNPJ" in values or "CODIGO CLIENTE" in values):
+            return int(index)
+    return find_header_row(path, sheet_name)
+
+
+def read_customer_excel(path: Path) -> pd.DataFrame:
+    excel = pd.ExcelFile(path)
+    sheet = excel.sheet_names[0]
+    header_row = find_customer_header_row(path, sheet)
+    df = pd.read_excel(path, sheet_name=sheet, header=header_row, dtype=str).dropna(how="all").fillna("")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def customer_column_map(columns: list[str]) -> dict[str, str]:
+    return {field: pick_column(columns, aliases) for field, aliases in CUSTOMER_FIELD_ALIASES.items()}
+
+
+def active_customer_import_id(conn) -> str:
+    row = conn.execute(
+        "SELECT id FROM customers_registry_imports WHERE active = 1 ORDER BY imported_at DESC LIMIT 1"
+    ).fetchone()
+    return row["id"] if row else ""
+
+
+def match_customer_unit(order: dict, units: list[dict]) -> dict | None:
+    if not units:
+        return None
+    order_unit = text(order.get("unidade"))
+    order_client = text(order.get("cliente"))
+    order_unit_key = normalize_key(order_unit)
+    order_client_key = normalize_key(order_client)
+    order_sigla = extract_unit_code(order_unit)
+
+    def client_bonus(unit: dict) -> int:
+        client_key = normalize_key(unit.get("cliente"))
+        group_name_key = normalize_key(unit.get("grupo_contratual_nome"))
+        if order_client_key and (order_client_key == client_key or order_client_key == group_name_key):
+            return 2
+        if order_client_key and (order_client_key in client_key or order_client_key in group_name_key):
+            return 1
+        return 0
+
+    candidates: list[tuple[int, dict]] = []
+    for unit in units:
+        unit_key = text(unit.get("unidade_normalizada"))
+        sigla = text(unit.get("sigla_unidade"))
+        score = 0
+        if order_unit_key and unit_key and order_unit_key == unit_key:
+            score = 100
+        elif order_sigla and sigla and order_sigla == sigla:
+            score = 80
+        elif order_unit_key and unit_key and (order_unit_key in unit_key or unit_key in order_unit_key):
+            score = 60
+        if score:
+            candidates.append((score + client_bonus(unit), unit))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def enrich_orders_with_customer_base(conn, import_id: str | None = None) -> dict:
+    active_import = active_customer_import_id(conn)
+    if not active_import:
+        return {"matched": 0, "unmatched": 0, "unmatched_units": []}
+    units = rows_to_dicts(conn.execute(
+        "SELECT * FROM customer_units WHERE import_id = ?",
+        (active_import,),
+    ).fetchall())
+    where = ""
+    params: list = []
+    if import_id:
+        where = "WHERE import_id = ?"
+        params.append(import_id)
+    orders = rows_to_dicts(conn.execute(
+        f"SELECT id, cliente, unidade FROM orders {where}",
+        params,
+    ).fetchall())
+    matched = 0
+    unmatched_units: set[str] = set()
+    for order in orders:
+        unit = match_customer_unit(order, units)
+        if unit:
+            matched += 1
+            conn.execute(
+                """
+                UPDATE orders
+                SET grupo_contratual = ?,
+                    grupo_contratual_codigo = ?,
+                    grupo_contratual_nome = ?,
+                    regional_cadastral = ?,
+                    carteira = ?,
+                    responsavel_cadastral = ?,
+                    status_unidade = ?,
+                    unidade_normalizada = ?,
+                    sigla_unidade = ?,
+                    cadastro_cliente = ?,
+                    cadastro_match = 'Sim',
+                    cadastro_alerta = ''
+                WHERE id = ?
+                """,
+                (
+                    unit.get("grupo_contratual"),
+                    unit.get("grupo_contratual_codigo"),
+                    unit.get("grupo_contratual_nome"),
+                    unit.get("regional"),
+                    unit.get("carteira"),
+                    unit.get("responsavel"),
+                    unit.get("status_unidade"),
+                    unit.get("unidade_normalizada"),
+                    unit.get("sigla_unidade"),
+                    unit.get("cliente"),
+                    order["id"],
+                ),
+            )
+        else:
+            unmatched_units.add(order.get("unidade") or "Não informado")
+            conn.execute(
+                """
+                UPDATE orders
+                SET grupo_contratual = '',
+                    grupo_contratual_codigo = '',
+                    grupo_contratual_nome = '',
+                    regional_cadastral = '',
+                    carteira = '',
+                    responsavel_cadastral = '',
+                    status_unidade = '',
+                    unidade_normalizada = ?,
+                    sigla_unidade = ?,
+                    cadastro_cliente = '',
+                    cadastro_match = 'Não',
+                    cadastro_alerta = 'Unidade sem cadastro correspondente'
+                WHERE id = ?
+                """,
+                (normalize_key(order.get("unidade")), extract_unit_code(order.get("unidade")), order["id"]),
+            )
+    return {
+        "matched": matched,
+        "unmatched": len(orders) - matched,
+        "unmatched_units": sorted(unmatched_units),
+    }
+
+
+def import_customer_base(path: Path, original_name: str) -> dict:
+    df = read_customer_excel(path)
+    mapped = customer_column_map(list(df.columns))
+    imported_at = datetime.now().isoformat(timespec="seconds")
+    import_id = datetime.now().strftime("%Y%m%d%H%M%S") + "-clientes-" + uuid.uuid4().hex[:6]
+    units: list[dict] = []
+    for _, row in df.iterrows():
+        row_dict = row.to_dict()
+        grupo_raw = text(row_dict.get(mapped.get("grupo_contratual", "")))
+        grupo_codigo, grupo_nome = split_group_contract(grupo_raw)
+        unidade = text(row_dict.get(mapped.get("unidade", ""))) or text(row_dict.get(mapped.get("cliente", "")))
+        estado = text(row_dict.get(mapped.get("estado", ""))).upper()
+        item = {
+            "import_id": import_id,
+            "cliente": text(row_dict.get(mapped.get("cliente", ""))),
+            "unidade": unidade,
+            "unidade_normalizada": normalize_key(unidade),
+            "sigla_unidade": extract_unit_code(unidade),
+            "grupo_contratual": grupo_raw,
+            "grupo_contratual_codigo": grupo_codigo,
+            "grupo_contratual_nome": grupo_nome,
+            "regional": regional_from_uf(estado),
+            "carteira": text(row_dict.get(mapped.get("carteira", ""))),
+            "responsavel": text(row_dict.get(mapped.get("responsavel", ""))),
+            "status_unidade": text(row_dict.get(mapped.get("status_unidade", ""))),
+            "cnpj": only_digits(row_dict.get(mapped.get("cnpj", ""))),
+            "cidade": text(row_dict.get(mapped.get("cidade", ""))),
+            "estado": estado,
+            "raw_json": json.dumps({str(k): text(v) for k, v in row_dict.items()}, ensure_ascii=False),
+        }
+        if item["cliente"] or item["unidade"] or item["grupo_contratual"]:
+            units.append(item)
+
+    with get_conn() as conn:
+        conn.execute("UPDATE customers_registry_imports SET active = 0")
+        conn.execute(
+            """
+            INSERT INTO customers_registry_imports (
+                id, filename, imported_at, rows_count, status, active, notes, mapped_fields_json
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                import_id,
+                original_name,
+                imported_at,
+                len(units),
+                "Ativa",
+                "Base de Clientes / Grupos Contratuais",
+                json.dumps(mapped, ensure_ascii=False),
+            ),
+        )
+        if units:
+            columns = list(units[0].keys())
+            placeholders = ", ".join(["?"] * len(columns))
+            conn.executemany(
+                f"INSERT INTO customer_units ({', '.join(columns)}) VALUES ({placeholders})",
+                [[row.get(column, "") for column in columns] for row in units],
+            )
+        enrichment = enrich_orders_with_customer_base(conn)
+    return customer_base_summary(extra={"last_enrichment": enrichment})
 
 
 def choose_atendente(row: dict) -> str:
@@ -481,6 +788,7 @@ def import_excel(path: Path, original_name: str) -> dict:
                 f"INSERT INTO orders ({', '.join(columns)}) VALUES ({placeholders})",
                 [[order[col] for col in columns] for order in orders],
             )
+        enrich_orders_with_customer_base(conn, import_id)
 
     return import_summary(import_id)
 
@@ -492,6 +800,64 @@ def rows_to_dicts(rows) -> list[dict]:
 def latest_import_id(conn) -> str:
     row = conn.execute("SELECT id FROM imports ORDER BY imported_at DESC LIMIT 1").fetchone()
     return row["id"] if row else ""
+
+
+def customer_base_summary(extra: dict | None = None) -> dict:
+    with get_conn() as conn:
+        active = conn.execute(
+            "SELECT * FROM customers_registry_imports WHERE active = 1 ORDER BY imported_at DESC LIMIT 1"
+        ).fetchone()
+        imports = rows_to_dicts(conn.execute(
+            "SELECT id, filename, imported_at, rows_count, status, active, notes FROM customers_registry_imports ORDER BY imported_at DESC"
+        ).fetchall())
+        if not active:
+            return {
+                "active": None,
+                "imports": imports,
+                "diagnostics": {
+                    "rows_count": 0,
+                    "clientes": 0,
+                    "unidades": 0,
+                    "grupos_contratuais": 0,
+                    "os_com_match": 0,
+                    "os_sem_match": 0,
+                    "unidades_sem_match": [],
+                    "campos_mapeados": {},
+                },
+            }
+        active_dict = dict(active)
+        import_id = active_dict["id"]
+        diagnostics = {
+            "rows_count": active_dict["rows_count"],
+            "clientes": conn.execute(
+                "SELECT COUNT(DISTINCT cliente) AS c FROM customer_units WHERE import_id = ? AND cliente <> ''",
+                (import_id,),
+            ).fetchone()["c"],
+            "unidades": conn.execute(
+                "SELECT COUNT(DISTINCT unidade_normalizada) AS c FROM customer_units WHERE import_id = ? AND unidade_normalizada <> ''",
+                (import_id,),
+            ).fetchone()["c"],
+            "grupos_contratuais": conn.execute(
+                "SELECT COUNT(DISTINCT grupo_contratual) AS c FROM customer_units WHERE import_id = ? AND grupo_contratual <> ''",
+                (import_id,),
+            ).fetchone()["c"],
+            "os_com_match": conn.execute("SELECT COUNT(*) AS c FROM orders WHERE cadastro_match = 'Sim'").fetchone()["c"],
+            "os_sem_match": conn.execute("SELECT COUNT(*) AS c FROM orders WHERE COALESCE(cadastro_match, '') <> 'Sim'").fetchone()["c"],
+            "unidades_sem_match": [
+                row["unidade"] for row in conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(unidade, ''), 'Não informado') AS unidade, COUNT(*) AS total
+                    FROM orders
+                    WHERE COALESCE(cadastro_match, '') <> 'Sim'
+                    GROUP BY unidade
+                    ORDER BY total DESC, unidade
+                    LIMIT 80
+                    """
+                ).fetchall()
+            ],
+            "campos_mapeados": json.loads(active_dict.get("mapped_fields_json") or "{}"),
+        }
+        return {"active": active_dict, "imports": imports, "diagnostics": diagnostics, **(extra or {})}
 
 
 def build_scope(query: dict) -> tuple[str, list, dict]:
@@ -582,9 +948,19 @@ def count_by(conn, field: str, scope_sql: str, scope_params: list, limit: int = 
         "responsavel_confirmacao",
         "produtividade_manual",
         "atendente_vinculado",
+        "cliente",
         "fornecedor",
         "unidade",
         "regional",
+        "grupo_contratual",
+        "grupo_contratual_codigo",
+        "grupo_contratual_nome",
+        "regional_cadastral",
+        "carteira",
+        "responsavel_cadastral",
+        "status_unidade",
+        "sigla_unidade",
+        "cadastro_match",
         "tipo_residuo",
         "prazo",
         "precisa_acao",
@@ -705,6 +1081,16 @@ def performance_unit_supplier(conn, scope_sql: str, scope_params: list) -> list[
         SELECT
             COALESCE(NULLIF(unidade, ''), 'Não informado') AS unidade,
             COALESCE(NULLIF(fornecedor, ''), 'Não informado') AS fornecedor,
+            MAX(COALESCE(NULLIF(cliente, ''), '')) AS cliente,
+            MAX(COALESCE(NULLIF(grupo_contratual, ''), '')) AS grupo_contratual,
+            MAX(COALESCE(NULLIF(grupo_contratual_codigo, ''), '')) AS grupo_contratual_codigo,
+            MAX(COALESCE(NULLIF(grupo_contratual_nome, ''), '')) AS grupo_contratual_nome,
+            MAX(COALESCE(NULLIF(regional_cadastral, ''), '')) AS regional_cadastral,
+            MAX(COALESCE(NULLIF(carteira, ''), '')) AS carteira,
+            MAX(COALESCE(NULLIF(responsavel_cadastral, ''), '')) AS responsavel_cadastral,
+            MAX(COALESCE(NULLIF(status_unidade, ''), '')) AS status_unidade,
+            MAX(COALESCE(NULLIF(sigla_unidade, ''), '')) AS sigla_unidade,
+            MAX(COALESCE(NULLIF(cadastro_match, ''), '')) AS cadastro_match,
             COUNT(*) AS total,
             SUM(CASE WHEN data_agendada <> '' THEN 1 ELSE 0 END) AS coletas_agendadas,
             SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS total_confirmadas,
@@ -757,6 +1143,17 @@ def unit_operational_summary(conn, scope_sql: str, scope_params: list) -> list[d
         SELECT
             {owner_sql} AS responsavel_operacional,
             COALESCE(NULLIF(unidade, ''), 'Não informado') AS unidade,
+            MAX(COALESCE(NULLIF(cliente, ''), '')) AS cliente,
+            MAX(COALESCE(NULLIF(grupo_contratual, ''), '')) AS grupo_contratual,
+            MAX(COALESCE(NULLIF(grupo_contratual_codigo, ''), '')) AS grupo_contratual_codigo,
+            MAX(COALESCE(NULLIF(grupo_contratual_nome, ''), '')) AS grupo_contratual_nome,
+            MAX(COALESCE(NULLIF(regional_cadastral, ''), '')) AS regional_cadastral,
+            MAX(COALESCE(NULLIF(carteira, ''), '')) AS carteira,
+            MAX(COALESCE(NULLIF(responsavel_cadastral, ''), '')) AS responsavel_cadastral,
+            MAX(COALESCE(NULLIF(status_unidade, ''), '')) AS status_unidade,
+            MAX(COALESCE(NULLIF(sigla_unidade, ''), '')) AS sigla_unidade,
+            MAX(COALESCE(NULLIF(cadastro_match, ''), '')) AS cadastro_match,
+            MAX(COALESCE(NULLIF(cadastro_alerta, ''), '')) AS cadastro_alerta,
             SUM(CASE WHEN data_agendada <> '' THEN 1 ELSE 0 END) AS coletas_agendadas,
             SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS confirmadas,
             SUM(CASE WHEN produtividade_manual = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_manuais,
@@ -913,6 +1310,11 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
                 "aberturas": count_by(conn, "responsavel_abertura", scope_sql, scope_params),
                 "fornecedores": count_by(conn, "fornecedor", scope_sql, scope_params),
                 "unidades": count_by(conn, "unidade", scope_sql, scope_params),
+                "clientes_cadastrais": count_by(conn, "cliente", scope_sql, scope_params),
+                "grupos_contratuais": count_by(conn, "grupo_contratual", scope_sql, scope_params),
+                "regionais_cadastrais": count_by(conn, "regional_cadastral", scope_sql, scope_params),
+                "carteiras": count_by(conn, "carteira", scope_sql, scope_params),
+                "status_unidade": count_by(conn, "status_unidade", scope_sql, scope_params),
                 "residuos": count_by(conn, "tipo_residuo", scope_sql, scope_params),
                 "motivos": count_by(conn, "motivo_nao_realizacao", scope_sql, scope_params),
             },
@@ -948,6 +1350,10 @@ def list_orders(query: dict) -> dict:
     search = query.get("search", [""])[0].strip()
     status = query.get("status", [""])[0].strip()
     action = query.get("action", [""])[0].strip()
+    grupo_contratual = query.get("grupo_contratual", [""])[0].strip()
+    regional_cadastral = query.get("regional_cadastral", [""])[0].strip()
+    carteira = query.get("carteira", [""])[0].strip()
+    status_unidade = query.get("status_unidade", [""])[0].strip()
     limit = min(int(query.get("limit", ["200"])[0] or 200), 1000)
 
     with get_conn() as conn:
@@ -959,15 +1365,24 @@ def list_orders(query: dict) -> dict:
         where = ["import_id = ?"]
         params = [import_id]
         if search:
-            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ?)")
+            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ? OR grupo_contratual LIKE ? OR regional_cadastral LIKE ? OR carteira LIKE ? OR status_unidade LIKE ? OR sigla_unidade LIKE ? OR cadastro_alerta LIKE ?)")
             needle = f"%{search}%"
-            params.extend([needle] * 7)
+            params.extend([needle] * 13)
         if status:
             where.append("status_gerencial = ?")
             params.append(status)
         if action:
             where.append("precisa_acao = ?")
             params.append(action)
+        for column, value in [
+            ("grupo_contratual", grupo_contratual),
+            ("regional_cadastral", regional_cadastral),
+            ("carteira", carteira),
+            ("status_unidade", status_unidade),
+        ]:
+            if value:
+                where.append(f"{column} = ?")
+                params.append(value)
 
         where_sql = " AND ".join(where)
         total = conn.execute(f"SELECT COUNT(*) AS c FROM orders WHERE {where_sql}", params).fetchone()["c"]
@@ -980,7 +1395,10 @@ def list_orders(query: dict) -> dict:
                    data_abertura, data_agendada, data_realizacao, data_realizada,
                    data_nao_realizada, motivo_nao_realizacao, usuario_responsavel,
                    atendente_vinculado, prazo, situacao_gerencial, precisa_acao,
-                   observacoes, inconsistencias, import_id
+                   observacoes, inconsistencias, grupo_contratual, grupo_contratual_codigo,
+                   grupo_contratual_nome, regional_cadastral, carteira, responsavel_cadastral,
+                   status_unidade, unidade_normalizada, sigla_unidade, cadastro_match,
+                   cadastro_alerta, import_id
             FROM orders
             WHERE {where_sql}
             ORDER BY precisa_acao DESC, data_abertura DESC, numero_os DESC
@@ -1038,6 +1456,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return super().do_GET()
             if path == "/api/imports":
                 return self.send_json({"imports": list_imports()})
+            if path == "/api/customer-base":
+                return self.send_json(customer_base_summary())
             if path == "/api/dashboard":
                 return self.send_json(dashboard(
                     query.get("import_id", ["latest"])[0],
@@ -1066,7 +1486,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/api/import":
+        if parsed.path not in {"/api/import", "/api/customer-base/import"}:
             return self.send_error_json("Rota não encontrada", HTTPStatus.NOT_FOUND)
 
         try:
@@ -1089,8 +1509,12 @@ class Handler(SimpleHTTPRequestHandler):
             with target.open("wb") as f:
                 shutil.copyfileobj(field.file, f)
 
-            summary = import_excel(target, safe_name)
-            self.send_json({"ok": True, "import": summary})
+            if parsed.path == "/api/customer-base/import":
+                summary = import_customer_base(target, safe_name)
+                self.send_json({"ok": True, "customer_base": summary})
+            else:
+                summary = import_excel(target, safe_name)
+                self.send_json({"ok": True, "import": summary})
         except Exception as exc:
             self.send_error_json(str(exc), HTTPStatus.BAD_REQUEST)
 

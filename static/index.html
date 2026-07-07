@@ -3,29 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Gestão da Operação de Atendimento</title>
+  <title>Projeto Confirmação de Coleta — Expansão Operacional</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <aside class="sidebar">
     <div class="brand">
       <span class="brand-mark">SIGRA</span>
-      <strong>Atendimento</strong>
+      <strong>Expansão Operacional</strong>
     </div>
     <nav>
-      <button class="nav active" data-view="overview">Visão Geral</button>
-      <button class="nav" data-view="imports">Importações SIGRA</button>
-      <button class="nav" data-view="base">Base de OS</button>
-      <button class="nav" data-view="attendants">Confirmações manuais</button>
-      <button class="nav" data-view="collabUnits">Acompanhamento por unidade</button>
-      <button class="nav" data-view="suppliers">Performance por Fornecedor</button>
+      <button class="nav active" data-view="overview"><span>RE</span><strong>Resumo da Expansão</strong></button>
+      <button class="nav" data-view="baselineEvolution"><span>BE</span><strong>Baseline e Evolução</strong></button>
+      <button class="nav" data-view="waves"><span>ON</span><strong>Ondas de Implantação</strong></button>
+      <button class="nav" data-view="collabUnits"><span>UN</span><strong>Aderência por Unidade</strong></button>
+      <button class="nav" data-view="attendants"><span>AT</span><strong>Aderência por Atendente</strong></button>
+      <button class="nav" data-view="imports"><span>IM</span><strong>Importações SIGRA</strong></button>
+      <button class="nav" data-view="base"><span>OS</span><strong>Base de OS</strong></button>
+      <button class="nav" data-view="settings"><span>CF</span><strong>Configurações</strong></button>
     </nav>
   </aside>
 
   <main>
     <header class="topbar">
+      <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Recolher menu lateral" title="Recolher menu lateral">☰</button>
       <div>
-        <h1>Gestão da Operação de Atendimento</h1>
+        <h1>Projeto Confirmação de Coleta — Expansão Operacional</h1>
+        <p class="project-subtitle">Gestão da evolução da confirmação de coleta por ondas, baseline e comparativos.</p>
         <p id="periodLabel">Importe uma planilha SIGRA para iniciar a análise.</p>
       </div>
       <div class="date-filter">
@@ -43,27 +47,75 @@
     <section id="alerts" class="alerts hidden"></section>
 
     <section id="overview" class="view active">
-      <div class="kpi-grid" id="kpiGrid"></div>
+      <section class="panel executive-panel">
+        <div class="section-head">
+          <div>
+            <h2>Resumo da Expansão</h2>
+            <p class="panel-note">Visão executiva da cobertura, confirmação e pontos de ação da operação.</p>
+          </div>
+        </div>
+        <div class="kpi-grid executive-kpis" id="kpiGrid"></div>
+      </section>
+      <div class="grid overview-grid">
+        <section class="panel">
+          <div class="section-head">
+            <h2>Composição da Confirmação</h2>
+            <p class="panel-note">Distribuição das OS entre atendente, fornecedor, pendências e não realizadas.</p>
+          </div>
+          <div id="overviewComposition" class="composition-list"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2>Antes x Depois</h2>
+            <p class="panel-note">Comparativo contra baseline do projeto.</p>
+          </div>
+          <div class="placeholder-box">
+            <strong>Baseline não definido.</strong>
+            <span>Cadastre o baseline para comparar antes x depois.</span>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2>Ondas de Implantação</h2>
+            <p class="panel-note">Acompanhamento da expansão por unidade.</p>
+          </div>
+          <div class="placeholder-box">
+            <strong>Ondas não cadastradas.</strong>
+            <span>Cadastre ondas para acompanhar a expansão por unidade.</span>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2>Alertas e Prioridades</h2>
+            <p class="panel-note">Lista curta para direcionar a ação do supervisor.</p>
+          </div>
+          <div id="overviewPriorities" class="priority-list"></div>
+        </section>
+      </div>
       <div class="grid two">
         <section class="panel">
           <h2>Status gerencial</h2>
           <div id="chartStatusGerencial" class="bar-list"></div>
         </section>
         <section class="panel">
-          <h2>Origem da confirmação</h2>
-          <div id="chartConfirmacao" class="bar-list"></div>
-        </section>
-      </div>
-      <div class="grid two">
-        <section class="panel">
           <h2>Unidades</h2>
           <div id="chartUnidades" class="bar-list"></div>
         </section>
-        <section class="panel">
-          <h2>Tipos de resíduo</h2>
-          <div id="chartResiduos" class="bar-list"></div>
-        </section>
       </div>
+    </section>
+
+    <section id="baselineEvolution" class="view">
+      <section class="panel placeholder-page">
+        <h2>Baseline e Evolução</h2>
+        <p>Esta tela será usada para cadastrar o cenário antes da implantação/ampliação da confirmação de coleta e comparar a evolução por período, onda, unidade, atendente e fornecedor.</p>
+      </section>
+    </section>
+
+    <section id="waves" class="view">
+      <section class="panel placeholder-page">
+        <h2>Ondas de Implantação</h2>
+        <p>Esta tela será usada para cadastrar ondas e vincular unidades à expansão do projeto.</p>
+      </section>
     </section>
 
     <section id="imports" class="view">
@@ -142,14 +194,15 @@
 
     <section id="attendants" class="view">
       <section class="panel">
-        <h2>Confirmações manuais por usuário</h2>
+        <h2>Aderência por Atendente</h2>
+        <p class="panel-note">Confirmações do Atendente considera somente ação direta de usuário humano/atendente.</p>
         <div id="chartAtendentes" class="bar-list wide"></div>
       </section>
       <section class="panel">
-        <h2>Detalhamento das confirmações manuais</h2>
+        <h2>Detalhamento das Confirmações do Atendente</h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Usuário</th><th>Total</th><th>Confirmadas</th><th>Manuais</th><th>Via MTR</th><th>Pendentes confirmação</th><th>Não realizadas</th><th>Precisam ação</th><th>Alertas</th></tr></thead>
+            <thead><tr><th>Usuário</th><th>Total</th><th>Confirmadas</th><th>Atendente</th><th>Fornecedor via MTR</th><th>Pendências de Contingência</th><th>Não realizadas</th><th>Precisam ação</th><th>Alertas</th></tr></thead>
             <tbody id="attendantsTable"></tbody>
           </table>
         </div>
@@ -163,7 +216,7 @@
     <section id="collabUnits" class="view">
       <section class="panel">
         <div class="section-head">
-          <h2>Acompanhamento operacional por unidade, usuário e fornecedor</h2>
+          <h2>Aderência por Unidade</h2>
           <p class="panel-note">Separe confirmação total da coleta e produtividade manual. O filtro selecionado recalcula todos os blocos abaixo.</p>
         </div>
         <div class="filters compact">
@@ -176,7 +229,7 @@
           <label class="filter-field">Fornecedores
             <select id="supplierFilter" class="multi-select" multiple size="5"></select>
           </label>
-          <label class="filter-field">Usuários manuais
+          <label class="filter-field">Usuários atendentes
             <select id="manualUserFilter" class="multi-select" multiple size="5"></select>
           </label>
         </div>
@@ -196,9 +249,9 @@
                 <th>Responsável</th>
                 <th>Coletas agendadas</th>
                 <th>Confirmadas</th>
-                <th>Manuais</th>
-                <th>Via MTR</th>
-                <th>Pendentes confirmação</th>
+                <th>Atendente</th>
+                <th>Fornecedor via MTR</th>
+                <th>Pendências de Contingência</th>
                 <th>Não realizadas</th>
               </tr>
             </thead>
@@ -207,14 +260,14 @@
         </div>
       </section>
       <section class="panel">
-        <h2>Origem manual por usuário e unidade</h2>
+        <h2>Confirmações do Atendente por usuário e unidade</h2>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Usuário que confirmou</th>
                 <th>Unidade</th>
-                <th>Confirmações manuais</th>
+                <th>Confirmações do Atendente</th>
                 <th>Realizadas confirmadas</th>
               </tr>
             </thead>
@@ -232,9 +285,9 @@
                 <th>Fornecedor</th>
                 <th>Total coletas</th>
                 <th>Total confirmadas</th>
-                <th>Manuais</th>
-                <th>Via MTR</th>
-                <th>Sem confirmação MTR</th>
+                <th>Atendente</th>
+                <th>Fornecedor via MTR</th>
+                <th>Sem confirmação do fornecedor via MTR</th>
                 <th>Pendência operacional</th>
                 <th>Não realizadas</th>
               </tr>
@@ -253,9 +306,9 @@
                 <th>Unidade</th>
                 <th>Coletas agendadas</th>
                 <th>Confirmadas</th>
-                <th>Manuais</th>
-                <th>Via MTR</th>
-                <th>Pendentes confirmação</th>
+                <th>Atendente</th>
+                <th>Fornecedor via MTR</th>
+                <th>Pendências de Contingência</th>
                 <th>Não realizadas</th>
               </tr>
             </thead>
@@ -265,30 +318,10 @@
       </section>
     </section>
 
-    <section id="suppliers" class="view">
-      <section class="panel">
-        <div class="section-head">
-          <h2>Painel de fornecedores</h2>
-          <p class="panel-note">Pendentes aqui significa: coletas atribuídas ao fornecedor que não foram confirmadas via MTR pelo fornecedor.</p>
-        </div>
-        <div id="supplierOverview" class="supplier-overview"></div>
-        <div id="supplierDecision" class="supplier-decision"></div>
-        <div class="segmented" id="supplierSegments">
-          <button type="button" class="active" data-supplier-filter="critical">Críticos</button>
-          <button type="button" data-supplier-filter="attention">Atenção</button>
-          <button type="button" data-supplier-filter="good">Aderentes</button>
-          <button type="button" data-supplier-filter="all">Todos</button>
-        </div>
-        <div id="supplierRanking" class="supplier-ranking"></div>
-      </section>
-      <section class="panel">
-        <h2>Resumo operacional por fornecedor</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Fornecedor</th><th>Total coletas</th><th>Aderência MTR</th><th>Via MTR</th><th>Sem confirmação MTR</th><th>Confirmadas manuais</th><th>Pendência operacional</th><th>Não realizadas</th><th>Precisam ação</th><th>Recomendação</th></tr></thead>
-            <tbody id="suppliersTable"></tbody>
-          </table>
-        </div>
+    <section id="settings" class="view">
+      <section class="panel placeholder-page">
+        <h2>Configurações</h2>
+        <p>Esta tela será usada para configurar calendário de medição, clientes, ondas, regras de criticidade, de/para de unidades e parâmetros do projeto.</p>
       </section>
     </section>
   </main>

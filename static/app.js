@@ -3,7 +3,6 @@ let dashboardData = null;
 let currentOrders = [];
 let sortState = { key: "", dir: "asc" };
 let dateFilter = { from: "", to: "" };
-let supplierViewFilter = "critical";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -46,18 +45,40 @@ function activateView(view) {
   $$(".view").forEach((section) => section.classList.toggle("active", section.id === view));
 }
 
+function applySidebarState() {
+  const collapsed = localStorage.getItem("sigraSidebarCollapsed") === "true";
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const button = $("#sidebarToggle");
+  if (button) {
+    button.setAttribute("aria-label", collapsed ? "Expandir menu lateral" : "Recolher menu lateral");
+    button.title = collapsed ? "Expandir menu lateral" : "Recolher menu lateral";
+  }
+}
+
 function renderKpis(kpis = {}) {
+  const total = Number(kpis.coletas_agendadas ?? kpis.total_os ?? 0);
+  const confirmed = Number(kpis.confirmacoes_manuais ?? 0) + Number(kpis.confirmacoes_mtr ?? 0);
+  const coverage = pct(confirmed, total);
   const items = [
-    ["Coletas agendadas", kpis.coletas_agendadas ?? 0],
-    ["OS únicas", kpis.os_unicas ?? 0],
-    ["Confirmações manuais", kpis.confirmacoes_manuais ?? 0],
-    ["Confirmações via MTR", kpis.confirmacoes_mtr ?? 0],
-    ["Pendentes confirmação", kpis.pendentes_confirmacao ?? 0],
-    ["Precisam de ação", kpis.precisam_acao ?? 0],
+    ["OK", "% de Coletas Confirmadas", `${coverage}%`, `${confirmed} coletas confirmadas de ${total} consideradas`, "good"],
+    ["AT", "Confirmações do Atendente", kpis.confirmacoes_manuais ?? 0, "Ação direta de usuário humano/atendente", "blue"],
+    ["MTR", "Fornecedor via MTR", kpis.confirmacoes_mtr ?? 0, "Confirmações feitas pelo link da MTR", "green"],
+    ["!", "Pendências de Contingência", kpis.pendentes_confirmacao ?? 0, "Sem fornecedor via MTR e sem atendente", "warn"],
+    ["OS", "OS no período", kpis.coletas_agendadas ?? kpis.total_os ?? 0, "Ordens de serviço consideradas no filtro", "neutral"],
+    ["A", "Precisam de ação", kpis.precisam_acao ?? 0, "Pendências, vencidas e inconsistências críticas", "danger"],
+    ["UN", "Unidades no escopo", dashboardData?.charts?.unidades?.length ?? 0, "Unidades encontradas no período filtrado", "blue"],
+    ["+", "Evolução vs baseline", "Baseline não definido", "Cadastre o baseline para medir variação", "neutral"],
   ];
-  $("#kpiGrid").innerHTML = items.map(([label, value]) => `
-    <article class="kpi"><span>${label}</span><strong>${value}</strong></article>
+  $("#kpiGrid").innerHTML = items.map(([icon, label, value, detail, tone]) => `
+    <article class="kpi ${tone}">
+      <b>${icon}</b>
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>${detail}</small>
+    </article>
   `).join("");
+  renderOverviewComposition(kpis);
+  renderOverviewPriorities(kpis);
 }
 
 function renderBars(selector, rows = []) {
@@ -134,6 +155,7 @@ function renderPerformance(selector, rows = []) {
 }
 
 function renderSupplierPerformance(rows = []) {
+  if (!$("#supplierOverview") || !$("#supplierDecision") || !$("#supplierRanking") || !$("#suppliersTable")) return;
   const missingSupplier = rows.find((row) => row.label === "Não informado");
   const supplierRows = rows.filter((row) => row.label !== "Não informado");
   const sorted = [...supplierRows].sort((a, b) => {
@@ -350,9 +372,9 @@ function renderCollaboratorUnit() {
     <article><span>Unidades no filtro</span><strong>${computedUnits.length}</strong></article>
     <article><span>Coletas</span><strong>${scopeTotals.coletas_agendadas || 0}</strong></article>
     <article><span>Confirmadas</span><strong>${scopeTotals.confirmadas || 0}</strong></article>
-    <article><span>Manuais</span><strong>${scopeTotals.confirmacoes_manuais || 0}</strong></article>
-    <article class="is-warn"><span>Pendentes confirmação</span><strong>${scopeTotals.pendentes_confirmacao || 0}</strong></article>
-    <article class="is-bad"><span>Sem MTR</span><strong>${scopeTotals.pendentes_confirmacao_fornecedor || 0}</strong></article>
+    <article><span>Atendente</span><strong>${scopeTotals.confirmacoes_manuais || 0}</strong></article>
+    <article class="is-warn"><span>Pendências de Contingência</span><strong>${scopeTotals.pendentes_confirmacao || 0}</strong></article>
+    <article class="is-bad"><span>Sem confirmação do fornecedor via MTR</span><strong>${scopeTotals.pendentes_confirmacao_fornecedor || 0}</strong></article>
   `;
 
   $("#ownerTable").innerHTML = filteredOwners.map((row) => `
@@ -443,23 +465,23 @@ function renderCollaboratorUnit() {
         <div class="unit-owner">${row.responsavel_operacional}</div>
         <div class="card-metric">
           <div>
-            <span>Confirmação total da coleta</span>
+          <span>% de Coletas Confirmadas</span>
             <strong>${totalRate}%</strong>
           </div>
           <div class="metric-bar ${totalClass}"><span style="width:${Math.max(2, Math.min(100, Number(totalRate)))}%"></span></div>
         </div>
         <div class="card-metric secondary">
           <div>
-            <span>Confirmação manual</span>
+            <span>Coletas confirmadas pelo atendente</span>
             <strong>${manualRate}%</strong>
           </div>
           <div class="metric-bar ${manualClass}"><span style="width:${Math.max(2, Math.min(100, Number(manualRate)))}%"></span></div>
         </div>
         <div class="unit-meta">
           <span>${coletasAgendadas} coletas no período</span>
-          <span>${manuais} manuais · ${viaMtr} via MTR/fornecedor</span>
+          <span>${manuais} atendente · ${viaMtr} fornecedor via MTR</span>
           <strong>${pendingConfirmationText}</strong>
-          <strong>${pendentesFornecedor} sem confirmação via MTR</strong>
+          <strong>${pendentesFornecedor} sem confirmação do fornecedor via MTR</strong>
           <span>${row.nao_realizadas} não realizadas</span>
         </div>
         <div class="unit-card-hint">Clique para ver as OS vinculadas</div>
@@ -497,6 +519,64 @@ function updateStatusFilter(rows) {
   select.value = statuses.includes(current) ? current : "";
 }
 
+function renderOverviewComposition(kpis = {}) {
+  const target = $("#overviewComposition");
+  if (!target) return;
+  const total = Number(kpis.coletas_agendadas ?? kpis.total_os ?? 0);
+  const manual = Number(kpis.confirmacoes_manuais ?? 0);
+  const mtr = Number(kpis.confirmacoes_mtr ?? 0);
+  const pending = Number(kpis.pendentes_confirmacao ?? 0);
+  const notDone = Number(kpis.nao_realizadas ?? 0);
+  const explained = manual + mtr + pending + notDone;
+  const other = Math.max(0, total - explained);
+  const rows = [
+    ["Confirmações do Atendente", manual, "attendant"],
+    ["Fornecedor via MTR", mtr, "mtr"],
+    ["Pendências de Contingência", pending, "pending"],
+    ["Não realizadas", notDone, "danger"],
+  ];
+  if (other) rows.push(["Agendadas/em aberto", other, "neutral"]);
+  target.innerHTML = rows.map(([label, value, klass]) => `
+    <div class="composition-row">
+      <span>${label}</span>
+      <div class="mini-track"><b class="${klass}" style="width:${Math.max(2, Math.min(100, Number(pct(value, total))))}%"></b></div>
+      <strong>${value} <small>${pct(value, total)}%</small></strong>
+    </div>
+  `).join("");
+}
+
+function renderOverviewPriorities(kpis = {}) {
+  const target = $("#overviewPriorities");
+  if (!target) return;
+  const units = dashboardData?.performance?.unidades || [];
+  const actionUnits = [...units].sort((a, b) => Number(b.precisam_acao || 0) - Number(a.precisam_acao || 0));
+  const pendingUnits = [...units].sort((a, b) => Number(b.pendentes_confirmacao || 0) - Number(a.pendentes_confirmacao || 0));
+  const alerts = [
+    {
+      title: "Maior pendência",
+      detail: pendingUnits[0] ? `${pendingUnits[0].unidade} · ${pendingUnits[0].pendentes_confirmacao} pendência(s)` : "Sem pendências por unidade",
+      severity: Number(pendingUnits[0]?.pendentes_confirmacao || 0) ? "Alta" : "Baixa",
+    },
+    {
+      title: "Maior volume que precisa de ação",
+      detail: actionUnits[0] ? `${actionUnits[0].unidade} · ${actionUnits[0].precisam_acao} item(ns)` : "Sem itens críticos",
+      severity: Number(actionUnits[0]?.precisam_acao || 0) ? "Média" : "Baixa",
+    },
+    {
+      title: "Inconsistências",
+      detail: `${kpis.alertas ?? 0} alerta(s) sinalizado(s)`,
+      severity: Number(kpis.alertas || 0) ? "Média" : "Baixa",
+    },
+  ];
+  target.innerHTML = alerts.map((item) => `
+    <article>
+      <span>${item.title}</span>
+      <strong>${item.detail}</strong>
+      <em>${item.severity}</em>
+    </article>
+  `).join("");
+}
+
 async function loadDashboard(importId = currentImportId) {
   const params = new URLSearchParams({ import_id: importId });
   if (dateFilter.from) params.set("date_from", dateFilter.from);
@@ -515,13 +595,10 @@ async function loadDashboard(importId = currentImportId) {
   $("#periodLabel").textContent = `Período analisado: ${imp.period_start_label || "-"} a ${imp.period_end_label || "-"} | ${sourceLabel}`;
   renderKpis(dashboardData.kpis);
   renderBars("#chartStatusGerencial", dashboardData.charts.status_gerencial);
-  renderBars("#chartConfirmacao", dashboardData.charts.origem_confirmacao);
   renderBars("#chartUnidades", dashboardData.charts.unidades);
-  renderBars("#chartResiduos", dashboardData.charts.residuos);
   renderBars("#chartAtendentes", dashboardData.charts.atendentes);
   renderBars("#chartAberturas", dashboardData.charts.aberturas);
   renderPerformance("#attendantsTable", dashboardData.performance.atendentes);
-  renderSupplierPerformance(dashboardData.performance.fornecedores);
   populateMultiSelect("#ownerFilter", dashboardData.performance.responsaveis_operacionais.map((row) => row.label));
   populateMultiSelect("#unitFilter", dashboardData.performance.unidades.map((row) => row.unidade));
   populateMultiSelect("#supplierFilter", dashboardData.performance.colaborador_unidade_fornecedor.map((row) => row.fornecedor));
@@ -676,6 +753,10 @@ async function refreshAll() {
 
 function wireEvents() {
   $$(".nav").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
+  $("#sidebarToggle")?.addEventListener("click", () => {
+    localStorage.setItem("sigraSidebarCollapsed", String(!document.body.classList.contains("sidebar-collapsed")));
+    applySidebarState();
+  });
   $("#fileInput").addEventListener("change", (event) => uploadFile(event.target));
   $("#fileInputSecondary").addEventListener("change", (event) => uploadFile(event.target));
   $("#searchInput").addEventListener("input", () => loadOrders());
@@ -690,13 +771,6 @@ function wireEvents() {
       Array.from($(selector).options).forEach((option) => { option.selected = false; });
     });
     renderCollaboratorUnit();
-  });
-  $$("#supplierSegments button").forEach((button) => {
-    button.addEventListener("click", () => {
-      supplierViewFilter = button.dataset.supplierFilter;
-      $$("#supplierSegments button").forEach((item) => item.classList.toggle("active", item === button));
-      renderSupplierPerformance(dashboardData?.performance?.fornecedores || []);
-    });
   });
   $("#applyDateFilter").addEventListener("click", async () => {
     dateFilter = { from: $("#dateFrom").value, to: $("#dateTo").value };
@@ -722,4 +796,5 @@ function wireEvents() {
 }
 
 wireEvents();
+applySidebarState();
 refreshAll();

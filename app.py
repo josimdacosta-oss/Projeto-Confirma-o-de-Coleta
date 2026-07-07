@@ -74,6 +74,8 @@ PORTFOLIO_FIELD_ALIASES = {
     "atendimento": ["ATENDIMENTO", "Atendimento", "Atendente"],
     "assistente_atendimento": ["ASS DE ATENDIMENTO", "Ass de Atendimento", "Assistente de Atendimento", "Assistente"],
     "analista": ["Analista"],
+    "responsavel_confirmacao_unidade": ["Responsável Confirmação", "Responsavel Confirmacao", "Responsável pela Confirmação", "Responsável pela confirmação da unidade"],
+    "cobertura": ["Cobertura", "COBERTURA", "Coleta", "COLETA"],
     "categoria": ["Categoria", "CATEGORIA"],
     "complexidade": ["Complexidade", "COMPLEXIDADE"],
 }
@@ -93,6 +95,61 @@ def text(value) -> str:
 
 def clear_dashboard_cache() -> None:
     DASHBOARD_CACHE.clear()
+
+
+def same_person(left: str, right: str) -> bool:
+    left_key = normalize_key(left)
+    right_key = normalize_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_parts = set(left_key.split())
+    right_parts = set(right_key.split())
+    if left_parts & right_parts:
+        return True
+    return left_key in right_key or right_key in left_key
+
+
+def confirmation_execution_fields(responsavel_sigra: str, origem_confirmacao: str, produtividade_manual: str, responsavel_carteira: str) -> dict:
+    origem_key = normalize_key(origem_confirmacao)
+    user_key = normalize_key(responsavel_sigra)
+    is_mtr = "FORNECEDOR VIA MTR" in origem_key or user_key == "CONFIRMACAO COLETA"
+    if is_mtr:
+        return {
+            "tipo_confirmacao": "Fornecedor via MTR",
+            "feita_pelo_responsavel": "Não",
+            "feita_por_outro_atendente": "Não",
+        }
+    if text(produtividade_manual) == "Sim" and text(responsavel_sigra):
+        if not text(responsavel_carteira):
+            return {
+                "tipo_confirmacao": "Atendente sem carteira identificada",
+                "feita_pelo_responsavel": "Não",
+                "feita_por_outro_atendente": "Não",
+            }
+        if same_person(responsavel_sigra, responsavel_carteira):
+            return {
+                "tipo_confirmacao": "Atendente responsável pela carteira",
+                "feita_pelo_responsavel": "Sim",
+                "feita_por_outro_atendente": "Não",
+            }
+        return {
+            "tipo_confirmacao": "Outro atendente / apoio",
+            "feita_pelo_responsavel": "Não",
+            "feita_por_outro_atendente": "Sim",
+        }
+    if user_key and ("ROBO" in user_key or "SISTEMA" in user_key):
+        return {
+            "tipo_confirmacao": "Sistema/Robô",
+            "feita_pelo_responsavel": "Não",
+            "feita_por_outro_atendente": "Não",
+        }
+    return {
+        "tipo_confirmacao": "Sem confirmação",
+        "feita_pelo_responsavel": "Não",
+        "feita_por_outro_atendente": "Não",
+    }
 
 
 def dt_or_none(value):
@@ -485,12 +542,21 @@ def init_db():
             "carteira_atendimento",
             "carteira_assistente",
             "carteira_analista",
+            "carteira_responsavel_confirmacao",
+            "carteira_cobertura",
             "carteira_link_type",
             "carteira_identificada",
             "carteira_alerta",
+            "tipo_confirmacao",
+            "confirmacao_pelo_responsavel_carteira",
+            "confirmacao_por_outro_atendente",
         ]:
             if name not in existing:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT")
+        portfolio_existing = {row["name"] for row in conn.execute("PRAGMA table_info(service_portfolios)").fetchall()}
+        for name in ["responsavel_confirmacao_unidade", "cobertura"]:
+            if name not in portfolio_existing:
+                conn.execute(f"ALTER TABLE service_portfolios ADD COLUMN {name} TEXT")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_orders_import ON orders(import_id);
@@ -513,6 +579,8 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_service_portfolios_grupo ON service_portfolios(status, grupo_contratual);
             CREATE INDEX IF NOT EXISTS idx_service_portfolios_unidade ON service_portfolios(status, sigla_unidade, unidade);
             CREATE INDEX IF NOT EXISTS idx_orders_import_carteira_atendimento ON orders(import_id, carteira_atendimento);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_tipo_confirmacao ON orders(import_id, tipo_confirmacao);
+            CREATE INDEX IF NOT EXISTS idx_orders_import_carteira_responsavel ON orders(import_id, carteira_responsavel_confirmacao);
             """
         )
 
@@ -949,7 +1017,8 @@ def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) ->
     orders = rows_to_dicts(conn.execute(
         f"""
         SELECT id, cliente, unidade, unidade_normalizada, sigla_unidade,
-               grupo_contratual, grupo_contratual_nome, cadastro_cliente
+               grupo_contratual, grupo_contratual_nome, cadastro_cliente,
+               origem_confirmacao, responsavel_confirmacao, produtividade_manual
         FROM orders {where}
         """,
         params,
@@ -1132,7 +1201,8 @@ def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) ->
     orders = rows_to_dicts(conn.execute(
         f"""
         SELECT id, cliente, unidade, unidade_normalizada, sigla_unidade,
-               grupo_contratual, grupo_contratual_nome, cadastro_cliente
+               grupo_contratual, grupo_contratual_nome, cadastro_cliente,
+               origem_confirmacao, responsavel_confirmacao, produtividade_manual
         FROM orders {where}
         """,
         params,
@@ -1160,17 +1230,40 @@ def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) ->
                     link = candidate
                     break
         if link:
+            responsavel_carteira = text(link.get("responsavel_confirmacao_unidade")) or text(link.get("atendimento"))
+            execution = confirmation_execution_fields(
+                order.get("responsavel_confirmacao"),
+                order.get("origem_confirmacao"),
+                order.get("produtividade_manual"),
+                responsavel_carteira,
+            )
             matched_updates.append((
                 link.get("cs"),
                 link.get("atendimento"),
                 link.get("assistente_atendimento"),
                 link.get("analista"),
+                responsavel_carteira,
+                link.get("cobertura"),
                 link.get("link_type"),
+                execution["tipo_confirmacao"],
+                execution["feita_pelo_responsavel"],
+                execution["feita_por_outro_atendente"],
                 order["id"],
             ))
         else:
+            execution = confirmation_execution_fields(
+                order.get("responsavel_confirmacao"),
+                order.get("origem_confirmacao"),
+                order.get("produtividade_manual"),
+                "",
+            )
             unmatched_units.add(order.get("unidade") or "Não informado")
-            unmatched_updates.append((order["id"],))
+            unmatched_updates.append((
+                execution["tipo_confirmacao"],
+                execution["feita_pelo_responsavel"],
+                execution["feita_por_outro_atendente"],
+                order["id"],
+            ))
     if matched_updates:
         conn.executemany(
             """
@@ -1179,9 +1272,14 @@ def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) ->
                 carteira_atendimento = ?,
                 carteira_assistente = ?,
                 carteira_analista = ?,
+                carteira_responsavel_confirmacao = ?,
+                carteira_cobertura = ?,
                 carteira_link_type = ?,
                 carteira_identificada = 'Sim',
-                carteira_alerta = ''
+                carteira_alerta = '',
+                tipo_confirmacao = ?,
+                confirmacao_pelo_responsavel_carteira = ?,
+                confirmacao_por_outro_atendente = ?
             WHERE id = ?
             """,
             matched_updates,
@@ -1194,9 +1292,14 @@ def enrich_orders_with_service_portfolios(conn, import_id: str | None = None) ->
                 carteira_atendimento = '',
                 carteira_assistente = '',
                 carteira_analista = '',
+                carteira_responsavel_confirmacao = '',
+                carteira_cobertura = '',
                 carteira_link_type = '',
                 carteira_identificada = 'Não',
-                carteira_alerta = 'Carteira não identificada'
+                carteira_alerta = 'Carteira n?o identificada',
+                tipo_confirmacao = ?,
+                confirmacao_pelo_responsavel_carteira = ?,
+                confirmacao_por_outro_atendente = ?
             WHERE id = ?
             """,
             unmatched_updates,
@@ -1237,6 +1340,8 @@ def import_service_portfolio(path: Path, original_name: str) -> dict:
             "atendimento": atendimento,
             "assistente_atendimento": assistente,
             "analista": text(row_dict.get(mapped.get("analista", ""))),
+            "responsavel_confirmacao_unidade": text(row_dict.get(mapped.get("responsavel_confirmacao_unidade", ""))) or atendimento,
+            "cobertura": text(row_dict.get(mapped.get("cobertura", ""))),
             "categoria": text(row_dict.get(mapped.get("categoria", ""))),
             "complexidade": text(row_dict.get(mapped.get("complexidade", ""))),
             "status": "Ativo",
@@ -1289,6 +1394,8 @@ def upsert_service_portfolio(payload: dict) -> dict:
         "atendimento": text(payload.get("atendimento")),
         "assistente_atendimento": text(payload.get("assistente_atendimento")),
         "analista": text(payload.get("analista")),
+        "responsavel_confirmacao_unidade": text(payload.get("responsavel_confirmacao_unidade")) or text(payload.get("atendimento")),
+        "cobertura": text(payload.get("cobertura")),
         "categoria": text(payload.get("categoria")),
         "complexidade": text(payload.get("complexidade")),
         "status": text(payload.get("status")) or "Ativo",
@@ -1306,14 +1413,14 @@ def upsert_service_portfolio(payload: dict) -> dict:
                 UPDATE service_portfolios
                 SET link_type = ?, razao_social = ?, razao_social_normalizada = ?, cliente = ?,
                     grupo_contratual = ?, unidade = ?, sigla_unidade = ?, cs = ?, atendimento = ?,
-                    assistente_atendimento = ?, analista = ?, categoria = ?, complexidade = ?,
+                    assistente_atendimento = ?, analista = ?, responsavel_confirmacao_unidade = ?, cobertura = ?, categoria = ?, complexidade = ?,
                     status = ?, start_date = ?, end_date = ?, notes = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     values["link_type"], values["razao_social"], values["razao_social_normalizada"], values["cliente"],
                     values["grupo_contratual"], values["unidade"], values["sigla_unidade"], values["cs"], values["atendimento"],
-                    values["assistente_atendimento"], values["analista"], values["categoria"], values["complexidade"],
+                    values["assistente_atendimento"], values["analista"], values["responsavel_confirmacao_unidade"], values["cobertura"], values["categoria"], values["complexidade"],
                     values["status"], values["start_date"], values["end_date"], values["notes"], values["updated_at"], link_id,
                 ),
             )
@@ -1323,14 +1430,14 @@ def upsert_service_portfolio(payload: dict) -> dict:
                 INSERT INTO service_portfolios (
                     id, import_id, link_type, razao_social, razao_social_normalizada, cliente,
                     grupo_contratual, unidade, sigla_unidade, cs, atendimento, assistente_atendimento,
-                    analista, categoria, complexidade, status, start_date, end_date, source,
+                    analista, responsavel_confirmacao_unidade, cobertura, categoria, complexidade, status, start_date, end_date, source,
                     notes, created_at, updated_at, raw_json
-                ) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, '{}')
+                ) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, '{}')
                 """,
                 (
                     link_id, values["link_type"], values["razao_social"], values["razao_social_normalizada"], values["cliente"],
                     values["grupo_contratual"], values["unidade"], values["sigla_unidade"], values["cs"], values["atendimento"],
-                    values["assistente_atendimento"], values["analista"], values["categoria"], values["complexidade"],
+                    values["assistente_atendimento"], values["analista"], values["responsavel_confirmacao_unidade"], values["cobertura"], values["categoria"], values["complexidade"],
                     values["status"], values["start_date"], values["end_date"], values["notes"], now, values["updated_at"],
                 ),
             )
@@ -1699,8 +1806,14 @@ def count_by(conn, field: str, scope_sql: str, scope_params: list, limit: int = 
         "carteira_cs",
         "carteira_atendimento",
         "carteira_assistente",
+        "carteira_analista",
+        "carteira_responsavel_confirmacao",
+        "carteira_cobertura",
         "carteira_link_type",
         "carteira_identificada",
+        "tipo_confirmacao",
+        "confirmacao_pelo_responsavel_carteira",
+        "confirmacao_por_outro_atendente",
         "tipo_residuo",
         "prazo",
         "precisa_acao",
@@ -1836,6 +1949,8 @@ def performance_unit_supplier(conn, scope_sql: str, scope_params: list) -> list[
             SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS total_confirmadas,
             SUM(CASE WHEN produtividade_manual = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_manuais,
             SUM(CASE WHEN origem_confirmacao = 'Confirmada pelo fornecedor via MTR' THEN 1 ELSE 0 END) AS confirmacoes_mtr,
+            SUM(CASE WHEN confirmacao_pelo_responsavel_carteira = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_responsavel_carteira,
+            SUM(CASE WHEN confirmacao_por_outro_atendente = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_outros_atendentes,
             SUM(CASE WHEN data_agendada <> '' THEN 1 ELSE 0 END) - SUM(CASE WHEN origem_confirmacao = 'Confirmada pelo fornecedor via MTR' THEN 1 ELSE 0 END) AS pendentes_confirmacao_fornecedor,
             SUM(CASE WHEN {is_pending_confirmation_sql()} THEN 1 ELSE 0 END) AS pendentes_confirmacao,
             SUM(CASE WHEN status_gerencial = 'Não realizada' THEN 1 ELSE 0 END) AS nao_realizadas,
@@ -1894,10 +2009,20 @@ def unit_operational_summary(conn, scope_sql: str, scope_params: list) -> list[d
             MAX(COALESCE(NULLIF(sigla_unidade, ''), '')) AS sigla_unidade,
             MAX(COALESCE(NULLIF(cadastro_match, ''), '')) AS cadastro_match,
             MAX(COALESCE(NULLIF(cadastro_alerta, ''), '')) AS cadastro_alerta,
+            MAX(COALESCE(NULLIF(carteira_cs, ''), '')) AS carteira_cs,
+            MAX(COALESCE(NULLIF(carteira_atendimento, ''), '')) AS carteira_atendimento,
+            MAX(COALESCE(NULLIF(carteira_assistente, ''), '')) AS carteira_assistente,
+            MAX(COALESCE(NULLIF(carteira_analista, ''), '')) AS carteira_analista,
+            MAX(COALESCE(NULLIF(carteira_responsavel_confirmacao, ''), '')) AS carteira_responsavel_confirmacao,
+            MAX(COALESCE(NULLIF(carteira_cobertura, ''), '')) AS carteira_cobertura,
+            MAX(COALESCE(NULLIF(carteira_link_type, ''), '')) AS carteira_link_type,
+            MAX(COALESCE(NULLIF(carteira_identificada, ''), '')) AS carteira_identificada,
             SUM(CASE WHEN data_agendada <> '' THEN 1 ELSE 0 END) AS coletas_agendadas,
             SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS confirmadas,
             SUM(CASE WHEN produtividade_manual = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_manuais,
             SUM(CASE WHEN origem_confirmacao = 'Confirmada pelo fornecedor via MTR' THEN 1 ELSE 0 END) AS confirmacoes_mtr,
+            SUM(CASE WHEN confirmacao_pelo_responsavel_carteira = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_responsavel_carteira,
+            SUM(CASE WHEN confirmacao_por_outro_atendente = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_outros_atendentes,
             SUM(CASE WHEN {is_pending_confirmation_sql()} THEN 1 ELSE 0 END) AS pendentes_confirmacao,
             SUM(CASE WHEN status_gerencial = 'Não realizada' THEN 1 ELSE 0 END) AS nao_realizadas,
             SUM(CASE WHEN precisa_acao = 'Sim' THEN 1 ELSE 0 END) AS precisam_acao
@@ -1969,7 +2094,7 @@ def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) ->
         f"""
         {scope_sql}
         SELECT
-            COALESCE(NULLIF(carteira_atendimento, ''), 'Carteira não identificada') AS label,
+            COALESCE(NULLIF(carteira_responsavel_confirmacao, ''), NULLIF(carteira_atendimento, ''), 'Carteira não identificada') AS label,
             COUNT(DISTINCT COALESCE(NULLIF(cadastro_cliente, ''), NULLIF(cliente, ''), unidade)) AS clientes,
             COUNT(DISTINCT COALESCE(NULLIF(grupo_contratual, ''), 'Não informado')) AS grupos_contratuais,
             COUNT(DISTINCT COALESCE(NULLIF(unidade, ''), 'Não informado')) AS unidades,
@@ -1978,15 +2103,18 @@ def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) ->
             SUM(CASE WHEN status_gerencial = 'Realizada e confirmada' THEN 1 ELSE 0 END) AS confirmadas,
             SUM(CASE WHEN produtividade_manual = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_manuais,
             SUM(CASE WHEN origem_confirmacao = 'Confirmada pelo fornecedor via MTR' THEN 1 ELSE 0 END) AS confirmacoes_mtr,
+            SUM(CASE WHEN confirmacao_pelo_responsavel_carteira = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_responsavel_carteira,
+            SUM(CASE WHEN confirmacao_por_outro_atendente = 'Sim' THEN 1 ELSE 0 END) AS confirmacoes_outros_atendentes,
             SUM(CASE WHEN {is_pending_confirmation_sql()} THEN 1 ELSE 0 END) AS pendentes_confirmacao,
             SUM(CASE WHEN status_gerencial = 'Não realizada' THEN 1 ELSE 0 END) AS nao_realizadas,
             MAX(COALESCE(NULLIF(carteira_cs, ''), '')) AS cs,
-            MAX(COALESCE(NULLIF(carteira_assistente, ''), '')) AS assistente_atendimento
+            MAX(COALESCE(NULLIF(carteira_assistente, ''), '')) AS assistente_atendimento,
+            MAX(COALESCE(NULLIF(carteira_atendimento, ''), '')) AS atendimento,
+            MAX(COALESCE(NULLIF(carteira_cobertura, ''), '')) AS cobertura
         FROM scoped_orders
         GROUP BY label
         ORDER BY total_os DESC, label
-        """
-        ,
+        """,
         scope_params,
     ).fetchall()
     items = rows_to_dicts(rows)
@@ -1995,6 +2123,8 @@ def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) ->
         pending = int(item.get("pendentes_confirmacao") or 0)
         units = int(item.get("unidades") or 0)
         groups = int(item.get("grupos_contratuais") or 0)
+        manual_human = int(item.get("confirmacoes_manuais") or 0)
+        own_confirmations = int(item.get("confirmacoes_responsavel_carteira") or 0)
         load_score = total + (units * 8) + (groups * 5) + (pending * 2)
         if load_score >= 900:
             load_label = "Muito alta"
@@ -2005,7 +2135,8 @@ def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) ->
         else:
             load_label = "Baixa"
         coverage = float(item["confirmadas"] or 0) / total if total else 0
-        manual = float(item["confirmacoes_manuais"] or 0) / total if total else 0
+        manual = float(manual_human) / total if total else 0
+        own_rate = float(own_confirmations) / manual_human if manual_human else 0
         if coverage >= 0.85 and pending <= max(3, total * 0.05):
             profile = "Boa performance"
         elif coverage >= 0.65:
@@ -2016,9 +2147,32 @@ def performance_portfolio_attendant(conn, scope_sql: str, scope_params: list) ->
         item["carga_carteira"] = load_label
         item["taxa_confirmacao_carteira"] = round(coverage * 100, 1)
         item["taxa_confirmacao_atendente"] = round(manual * 100, 1)
+        item["taxa_execucao_responsavel"] = round(own_rate * 100, 1)
+        item["apoio_recebido"] = int(item.get("confirmacoes_outros_atendentes") or 0)
         item["perfil_performance"] = profile
     return items
 
+
+def performance_real_sigra_user(conn, scope_sql: str, scope_params: list) -> list[dict]:
+    rows = conn.execute(
+        f"""
+        {scope_sql}
+        SELECT
+            COALESCE(NULLIF(responsavel_confirmacao, ''), 'Não informado') AS label,
+            COUNT(*) AS confirmacoes_realizadas,
+            COUNT(DISTINCT COALESCE(NULLIF(unidade, ''), 'Não informado')) AS unidades,
+            COUNT(DISTINCT COALESCE(NULLIF(cadastro_cliente, ''), NULLIF(cliente, ''), unidade)) AS clientes,
+            SUM(CASE WHEN confirmacao_pelo_responsavel_carteira = 'Sim' THEN 1 ELSE 0 END) AS dentro_propria_carteira,
+            SUM(CASE WHEN confirmacao_por_outro_atendente = 'Sim' THEN 1 ELSE 0 END) AS apoio_prestado,
+            SUM(CASE WHEN COALESCE(carteira_identificada, '') <> 'Sim' THEN 1 ELSE 0 END) AS fora_da_carteira
+        FROM scoped_orders
+        WHERE produtividade_manual = 'Sim'
+        GROUP BY label
+        ORDER BY confirmacoes_realizadas DESC, label
+        """,
+        scope_params,
+    ).fetchall()
+    return rows_to_dicts(rows)
 
 def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> dict:
     cache_key = (import_id or "", date_from or "", date_to or "")
@@ -2112,9 +2266,15 @@ def dashboard(import_id: str = "", date_from: str = "", date_to: str = "") -> di
                 "carteiras": count_by(conn, "carteira", scope_sql, scope_params),
                 "status_unidade": count_by(conn, "status_unidade", scope_sql, scope_params),
                 "carteira_atendimento": count_by(conn, "carteira_atendimento", scope_sql, scope_params),
+                "carteira_responsavel_confirmacao": count_by(conn, "carteira_responsavel_confirmacao", scope_sql, scope_params),
+                "carteira_cs": count_by(conn, "carteira_cs", scope_sql, scope_params),
+                "carteira_assistente": count_by(conn, "carteira_assistente", scope_sql, scope_params),
+                "carteira_cobertura": count_by(conn, "carteira_cobertura", scope_sql, scope_params),
+                "tipo_confirmacao": count_by(conn, "tipo_confirmacao", scope_sql, scope_params),
             },
             "performance": {
                 "carteira_atendentes": performance_portfolio_attendant(conn, scope_sql, scope_params),
+                "execucao_sigra_usuarios": performance_real_sigra_user(conn, scope_sql, scope_params),
                 "atendentes": performance_by(conn, "responsavel_confirmacao", scope_sql, scope_params),
                 "aberturas": performance_by(conn, "responsavel_abertura", scope_sql, scope_params),
                 "responsaveis_operacionais": performance_operational_owner(conn, scope_sql, scope_params),
@@ -2163,9 +2323,9 @@ def list_orders(query: dict) -> dict:
         where = ["import_id = ?"]
         params = [import_id]
         if search:
-            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ? OR grupo_contratual LIKE ? OR regional_cadastral LIKE ? OR carteira LIKE ? OR status_unidade LIKE ? OR sigla_unidade LIKE ? OR cadastro_alerta LIKE ? OR carteira_atendimento LIKE ? OR carteira_cs LIKE ? OR carteira_assistente LIKE ?)")
+            where.append("(numero_os LIKE ? OR unidade LIKE ? OR fornecedor LIKE ? OR atendente_vinculado LIKE ? OR responsavel_abertura LIKE ? OR responsavel_confirmacao LIKE ? OR tipo_residuo LIKE ? OR grupo_contratual LIKE ? OR regional_cadastral LIKE ? OR carteira LIKE ? OR status_unidade LIKE ? OR sigla_unidade LIKE ? OR cadastro_alerta LIKE ? OR carteira_atendimento LIKE ? OR carteira_cs LIKE ? OR carteira_assistente LIKE ? OR carteira_responsavel_confirmacao LIKE ? OR tipo_confirmacao LIKE ?)")
             needle = f"%{search}%"
-            params.extend([needle] * 16)
+            params.extend([needle] * 18)
         if status:
             where.append("status_gerencial = ?")
             params.append(status)
@@ -2198,7 +2358,9 @@ def list_orders(query: dict) -> dict:
                    grupo_contratual_nome, regional_cadastral, carteira, responsavel_cadastral,
                    status_unidade, unidade_normalizada, sigla_unidade, cadastro_match,
                    cadastro_alerta, carteira_cs, carteira_atendimento, carteira_assistente,
-                   carteira_analista, carteira_link_type, carteira_identificada, carteira_alerta,
+                   carteira_analista, carteira_responsavel_confirmacao, carteira_cobertura,
+                   carteira_link_type, carteira_identificada, carteira_alerta,
+                   tipo_confirmacao, confirmacao_pelo_responsavel_carteira, confirmacao_por_outro_atendente,
                    import_id
             FROM orders
             WHERE {where_sql}

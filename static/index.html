@@ -183,6 +183,8 @@
                 <th data-sort="carteira_cs">CS</th>
                 <th data-sort="carteira_atendimento">Atendimento</th>
                 <th data-sort="carteira_assistente">Assistente</th>
+                <th data-sort="carteira_responsavel_confirmacao">Responsável carteira</th>
+                <th data-sort="carteira_cobertura">Cobertura</th>
                 <th data-sort="fornecedor">Fornecedor</th>
                 <th data-sort="tipo_residuo">Resíduo</th>
                 <th data-sort="status_original">Status SIGRA</th>
@@ -191,7 +193,10 @@
                 <th data-sort="responsavel_abertura">Abertura</th>
                 <th data-sort="status_operacional">Coleta</th>
                 <th data-sort="origem_confirmacao">Origem confirmação</th>
-                <th data-sort="responsavel_confirmacao">Responsável confirmação</th>
+                <th data-sort="responsavel_confirmacao">Usuário confirmou SIGRA</th>
+                <th data-sort="tipo_confirmacao">Tipo confirmação</th>
+                <th data-sort="confirmacao_pelo_responsavel_carteira">Pelo responsável</th>
+                <th data-sort="confirmacao_por_outro_atendente">Outro atendente</th>
                 <th data-sort="data_agendada">Agendada</th>
                 <th data-sort="data_realizacao">Realização</th>
                 <th data-sort="data_realizada">Realizada</th>
@@ -212,11 +217,21 @@
         <div id="chartAtendentes" class="bar-list wide"></div>
       </section>
       <section class="panel">
-        <h2>Detalhamento das Confirmações do Atendente</h2>
+        <h2>Visão por responsabilidade de carteira</h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Atendimento</th><th>CS</th><th>Assistente</th><th>Clientes</th><th>Grupos</th><th>Unidades</th><th>Fornecedores</th><th>Total OS</th><th>Atendente</th><th>Fornecedor via MTR</th><th>Pendências</th><th>% carteira</th><th>% atendente</th><th>Carga</th><th>Perfil</th></tr></thead>
+            <thead><tr><th>Responsável carteira</th><th>Atendimento</th><th>CS</th><th>Assistente</th><th>Clientes</th><th>Grupos</th><th>Unidades</th><th>Fornecedores</th><th>Total OS</th><th>Conf. pelo responsável</th><th>Apoio recebido</th><th>Fornecedor via MTR</th><th>Pendências</th><th>% carteira</th><th>% execução responsável</th><th>Carga</th><th>Perfil</th></tr></thead>
             <tbody id="attendantsTable"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Visão por execução real no SIGRA</h2>
+        <p class="panel-note">Agrupa pelo usuário que efetivamente confirmou no SIGRA. Não usa carteira como substituto do usuário real.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Usuário SIGRA</th><th>Confirmações realizadas</th><th>Unidades</th><th>Clientes</th><th>Dentro da própria carteira</th><th>Apoio prestado</th><th>Sem carteira identificada</th></tr></thead>
+            <tbody id="sigraExecutionTable"></tbody>
           </table>
         </div>
       </section>
@@ -370,6 +385,8 @@
           <input name="atendimento" placeholder="Atendimento">
           <input name="assistente_atendimento" placeholder="Assistente">
           <input name="analista" placeholder="Analista">
+          <input name="responsavel_confirmacao_unidade" placeholder="Responsável confirmação">
+          <input name="cobertura" placeholder="Cobertura">
           <select name="status">
             <option value="Ativo">Ativo</option>
             <option value="Inativo">Inativo</option>
@@ -400,6 +417,8 @@
                 <th>CS</th>
                 <th>Atendimento</th>
                 <th>Assistente</th>
+                <th>Resp. confirmação</th>
+                <th>Cobertura</th>
                 <th>Status</th>
                 <th>Origem</th>
               </tr>

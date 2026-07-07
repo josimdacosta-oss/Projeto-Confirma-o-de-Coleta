@@ -165,6 +165,7 @@ function renderPortfolioAttendants(rows = []) {
   $("#attendantsTable").innerHTML = rows.map((row) => `
     <tr class="${row.perfil_performance === "Priorizar" ? "is-bad" : row.perfil_performance === "Atenção" ? "is-mid" : "is-good"}">
       <td>${row.label}</td>
+      <td>${row.atendimento || ""}</td>
       <td>${row.cs || ""}</td>
       <td>${row.assistente_atendimento || ""}</td>
       <td>${row.clientes}</td>
@@ -172,15 +173,32 @@ function renderPortfolioAttendants(rows = []) {
       <td>${row.unidades}</td>
       <td>${row.fornecedores}</td>
       <td>${row.total_os}</td>
-      <td>${row.confirmacoes_manuais}</td>
+      <td>${row.confirmacoes_responsavel_carteira || 0}</td>
+      <td>${row.apoio_recebido || 0}</td>
       <td>${row.confirmacoes_mtr}</td>
       <td>${pill(row.pendentes_confirmacao)}</td>
       <td><strong>${row.taxa_confirmacao_carteira}%</strong></td>
-      <td><strong>${row.taxa_confirmacao_atendente}%</strong></td>
+      <td><strong>${row.taxa_execucao_responsavel}%</strong></td>
       <td>${row.carga_carteira}</td>
       <td>${row.perfil_performance}</td>
     </tr>
-  `).join("") || `<tr><td colspan="15">Nenhuma carteira de atendimento identificada.</td></tr>`;
+  `).join("") || `<tr><td colspan="17">Nenhuma carteira de atendimento identificada.</td></tr>`;
+}
+
+function renderSigraExecutionUsers(rows = []) {
+  const table = $("#sigraExecutionTable");
+  if (!table) return;
+  table.innerHTML = rows.map((row) => `
+    <tr>
+      <td>${row.label}</td>
+      <td>${row.confirmacoes_realizadas}</td>
+      <td>${row.unidades}</td>
+      <td>${row.clientes}</td>
+      <td>${row.dentro_propria_carteira}</td>
+      <td>${row.apoio_prestado}</td>
+      <td>${row.fora_da_carteira}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="7">Nenhuma confirmação manual encontrada no período.</td></tr>`;
 }
 
 function renderSupplierPerformance(rows = []) {
@@ -498,7 +516,7 @@ function renderCollaboratorUnit() {
         confirmacoes_manuais: manualTotals.confirmacoes_manuais,
       };
     }
-    const totals = sumRows(supplierScope, ["coletas_agendadas", "total_confirmadas", "confirmacoes_manuais", "confirmacoes_mtr", "pendentes_confirmacao_fornecedor", "pendentes_confirmacao", "nao_realizadas", "precisam_acao"]);
+    const totals = sumRows(supplierScope, ["coletas_agendadas", "total_confirmadas", "confirmacoes_manuais", "confirmacoes_mtr", "confirmacoes_responsavel_carteira", "confirmacoes_outros_atendentes", "pendentes_confirmacao_fornecedor", "pendentes_confirmacao", "nao_realizadas", "precisam_acao"]);
     const manualTotals = manualUsers.length ? sumRows(manualScope, ["confirmacoes_manuais"]) : {};
     return {
       ...row,
@@ -506,6 +524,8 @@ function renderCollaboratorUnit() {
       confirmadas: (manualUsers.length ? Number(manualTotals.confirmacoes_manuais || 0) + Number(totals.confirmacoes_mtr || 0) : totals.total_confirmadas),
       confirmacoes_manuais: (manualUsers.length ? manualTotals.confirmacoes_manuais : totals.confirmacoes_manuais),
       confirmacoes_mtr: totals.confirmacoes_mtr,
+      confirmacoes_responsavel_carteira: totals.confirmacoes_responsavel_carteira,
+      confirmacoes_outros_atendentes: totals.confirmacoes_outros_atendentes,
       pendentes_confirmacao: totals.pendentes_confirmacao,
       pendentes_confirmacao_fornecedor: totals.pendentes_confirmacao_fornecedor,
       nao_realizadas: totals.nao_realizadas,
@@ -586,6 +606,9 @@ function renderCollaboratorUnit() {
     const confirmadas = row.confirmadas;
     const manuais = row.confirmacoes_manuais;
     const viaMtr = row.confirmacoes_mtr;
+    const responsavelCarteira = row.carteira_responsavel_confirmacao || row.carteira_atendimento || row.responsavel_operacional || "Não identificado";
+    const apoioOutros = Number(row.confirmacoes_outros_atendentes || 0);
+    const peloResponsavel = Number(row.confirmacoes_responsavel_carteira || 0);
     const pendentesFornecedor = row.pendentes_confirmacao_fornecedor ?? Math.max(0, row.coletas_agendadas - row.confirmacoes_mtr);
     const unitPending = pending.filter((item) => item.unidade === row.unidade && hasAny(suppliers, item.fornecedor));
     const unitPendingConfirmation = pendingConfirmation.filter((item) => item.unidade === row.unidade && hasAny(suppliers, item.fornecedor));
@@ -624,6 +647,13 @@ function renderCollaboratorUnit() {
           <span>${row.regional_cadastral || "Regional não informada"}</span>
           <span>${row.status_unidade || "Status cadastral não informado"}</span>
         </div>
+        <div class="unit-responsibility">
+          <strong>Responsabilidade</strong>
+          <span>CS: ${row.carteira_cs || "Não informado"}</span>
+          <span>Analista: ${row.carteira_analista || "Não informado"}</span>
+          <span>Responsável confirmação: ${responsavelCarteira}</span>
+          <span>Cobertura: ${row.carteira_cobertura || "Não informada"}</span>
+        </div>
         <div class="card-metric">
           <div>
           <span>% de Coletas Confirmadas</span>
@@ -641,6 +671,8 @@ function renderCollaboratorUnit() {
         <div class="unit-meta">
           <span>${coletasAgendadas} coletas no período</span>
           <span>${manuais} atendente · ${viaMtr} fornecedor via MTR</span>
+          <span>${peloResponsavel} pelo responsável da carteira</span>
+          ${apoioOutros ? `<strong>Apoio de outros atendentes: ${apoioOutros}</strong>` : ""}
           <strong>${pendingConfirmationText}</strong>
           <strong>${pendentesFornecedor} sem confirmação do fornecedor via MTR</strong>
           <span>${row.nao_realizadas} não realizadas</span>
@@ -759,6 +791,7 @@ async function loadDashboard(importId = currentImportId) {
   renderBars("#chartUnidades", dashboardData.charts.unidades);
   renderBars("#chartAberturas", dashboardData.charts.aberturas);
   renderPortfolioAttendants(dashboardData.performance.carteira_atendentes || []);
+  renderSigraExecutionUsers(dashboardData.performance.execucao_sigra_usuarios || []);
   populateMultiSelect("#clientFilter", dashboardData.performance.unidades.map((row) => row.cliente || "Não informado"));
   populateMultiSelect("#contractGroupFilter", dashboardData.performance.unidades.map((row) => row.grupo_contratual || "Não informado"));
   populateMultiSelect("#registryRegionalFilter", dashboardData.performance.unidades.map((row) => row.regional_cadastral || "Não informado"));
@@ -849,6 +882,8 @@ function renderOrdersTable() {
       <td>${row.carteira_cs || ""}</td>
       <td>${row.carteira_atendimento || ""}</td>
       <td>${row.carteira_assistente || ""}</td>
+      <td>${row.carteira_responsavel_confirmacao || ""}</td>
+      <td>${row.carteira_cobertura || ""}</td>
       <td>${row.fornecedor}</td>
       <td>${row.tipo_residuo}</td>
       <td>${row.status_original}</td>
@@ -858,6 +893,9 @@ function renderOrdersTable() {
       <td>${row.status_operacional}</td>
       <td>${pill(row.origem_confirmacao || row.status_confirmacao)}</td>
       <td>${row.responsavel_confirmacao || ""}</td>
+      <td>${pill(row.tipo_confirmacao || "")}</td>
+      <td>${pill(row.confirmacao_pelo_responsavel_carteira || "Não")}</td>
+      <td>${pill(row.confirmacao_por_outro_atendente || "Não")}</td>
       <td>${fmtDate(row.data_agendada)}</td>
       <td>${fmtDate(row.data_realizacao)}</td>
       <td>${fmtDate(row.data_realizada)}</td>
@@ -890,6 +928,8 @@ async function openOrder(id) {
     ["Atendimento responsável", row.carteira_atendimento],
     ["Assistente de Atendimento", row.carteira_assistente],
     ["Analista da carteira", row.carteira_analista],
+    ["Responsável pela confirmação da unidade", row.carteira_responsavel_confirmacao],
+    ["Cobertura", row.carteira_cobertura],
     ["Tipo de vínculo da carteira", row.carteira_link_type],
     ["Carteira identificada", row.carteira_identificada],
     ["Alerta da carteira", row.carteira_alerta],
@@ -903,7 +943,10 @@ async function openOrder(id) {
     ["Status operacional da coleta", row.status_operacional],
     ["Status de confirmação", row.status_confirmacao],
     ["Origem da confirmação", row.origem_confirmacao],
-    ["Responsável pela confirmação", row.responsavel_confirmacao],
+    ["Usuário que confirmou no SIGRA", row.responsavel_confirmacao],
+    ["Tipo de confirmação", row.tipo_confirmacao],
+    ["Confirmação feita pelo responsável da carteira", row.confirmacao_pelo_responsavel_carteira],
+    ["Confirmação feita por outro atendente", row.confirmacao_por_outro_atendente],
     ["Conta como produtividade manual", row.produtividade_manual],
     ["Status gerencial", row.status_gerencial],
     ["Data de abertura", fmtDateTime(row.data_abertura)],
@@ -1035,10 +1078,12 @@ function renderServicePortfolios(payload = {}) {
       <td>${row.cs || ""}</td>
       <td>${row.atendimento || ""}</td>
       <td>${row.assistente_atendimento || ""}</td>
+      <td>${row.responsavel_confirmacao_unidade || row.atendimento || ""}</td>
+      <td>${row.cobertura || ""}</td>
       <td>${pill(row.status)}</td>
       <td>${row.source || ""}</td>
     </tr>
-  `).join("") || `<tr><td colspan="9">Nenhum vínculo de carteira cadastrado.</td></tr>`;
+  `).join("") || `<tr><td colspan="11">Nenhum vínculo de carteira cadastrado.</td></tr>`;
 }
 
 async function loadServicePortfolios() {

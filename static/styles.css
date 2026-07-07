@@ -1133,6 +1133,21 @@ dialog::backdrop {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.unit-responsibility {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0 10px;
+  padding: 8px;
+  border: 1px solid #dbe8f3;
+  border-radius: 7px;
+  background: #f8fbfd;
+  color: var(--muted);
+  font-size: 11px;
+}
+.unit-responsibility strong {
+  color: var(--ink);
+  font-size: 12px;
+}
 .diagnostics-list {
   display: grid;
   gap: 8px;

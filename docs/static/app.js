@@ -29,8 +29,13 @@ function applySidebarState() {
 
 function fmtDate(value) {
   if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const raw = String(value);
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (br) return `${String(br[1]).padStart(2, "0")}/${String(br[2]).padStart(2, "0")}/${br[3].length === 2 ? `20${br[3]}` : br[3]}`;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
   return date.toLocaleDateString("pt-BR");
 }
 
@@ -73,6 +78,7 @@ function renderKpis(kpis = {}) {
   const totalConsidered = Number(kpis.coletas_agendadas ?? kpis.total_os ?? 0);
   const confirmedTotal = Number(kpis.confirmacoes_manuais ?? 0) + Number(kpis.confirmacoes_mtr ?? 0);
   const baseline = measurementData?.baselines?.[0];
+  const baselineComparison = dashboardData?.charts?.baseline_comparison;
   const items = [
     {
       icon: "OK",
@@ -85,7 +91,7 @@ function renderKpis(kpis = {}) {
     {
       icon: "+",
       label: "Evolução vs baseline",
-      value: baseline ? (baseline.import_id ? "Baseline selecionado" : "Baseline planejado") : "Baseline não definido",
+      value: baselineComparison ? `${baselineComparison.variation_pp > 0 ? "+" : ""}${baselineComparison.variation_pp} p.p.` : (baseline ? "Disponível" : "Não definido"),
       detail: baseline
         ? `${baseline.period_start_label || fmtDate(baseline.period_start)} a ${baseline.period_end_label || fmtDate(baseline.period_end)}`
         : "Cadastre o baseline para medir variação",
@@ -188,6 +194,29 @@ function renderOverviewEvolution() {
 function renderOverviewBeforeAfter() {
   const target = $("#overviewBeforeAfter");
   if (!target) return;
+  const comparison = dashboardData?.charts?.baseline_comparison;
+  if (comparison) {
+    const rows = [
+      ["Cobertura", `${comparison.baseline.cobertura}%`, `${comparison.current.cobertura}%`, `${comparison.variation_pp > 0 ? "+" : ""}${comparison.variation_pp} p.p.`],
+      ["Atendente", comparison.baseline.confirmacoes_atendente, comparison.current.confirmacoes_atendente, `${comparison.variation_attendant > 0 ? "+" : ""}${comparison.variation_attendant}`],
+      ["Fornecedor via MTR", comparison.baseline.confirmacoes_mtr, comparison.current.confirmacoes_mtr, `${comparison.variation_mtr > 0 ? "+" : ""}${comparison.variation_mtr}`],
+      ["Pendências", comparison.baseline.pendencias_contingencia, comparison.current.pendencias_contingencia, `${comparison.variation_pending > 0 ? "+" : ""}${comparison.variation_pending}`],
+    ];
+    target.innerHTML = `
+      <div class="before-after-table">
+        <div class="before-after-head"><span>Métrica</span><span>Baseline</span><span>Atual</span><span>Variação</span></div>
+        ${rows.map((row) => `
+          <div class="before-after-row">
+            <strong>${row[0]}</strong>
+            <span>${row[1]}</span>
+            <span>${row[2]}</span>
+            <em class="${String(row[3]).startsWith("-") ? "is-down" : "is-up"}">${row[3]}</em>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    return;
+  }
   const baseline = measurementData?.baselines?.[0];
   if (baseline) {
     target.innerHTML = `
@@ -1521,24 +1550,38 @@ async function loadDashboard(importId = currentImportId) {
   const dataSource = dashboardData.analysis?.source_label || imp.source_label || "";
   $("#periodLabel").textContent = `Período analisado: ${imp.period_start_label || "-"} a ${imp.period_end_label || "-"} | ${sourceLabel} | ${waveText}${dataSource ? ` | ${dataSource}` : ""}`;
   renderOverview(dashboardData.kpis);
-  renderBars("#chartStatusGerencial", dashboardData.charts.status_gerencial);
-  renderBars("#chartConfirmacao", dashboardData.charts.origem_confirmacao);
-  renderBars("#chartUnidades", dashboardData.charts.unidades);
-  renderBars("#chartResiduos", dashboardData.charts.residuos);
-  renderAttendantExecutive(dashboardData.performance.atendentes_executivo || []);
-  renderSupplierPerformance(dashboardData.performance.fornecedores);
-  populateMultiSelect("#contractGroupFilter", dashboardData.performance.unidades.map((row) => `${row.grupo_contratual_codigo ? `${row.grupo_contratual_codigo} - ` : ""}${row.grupo_contratual_nome || "Não identificado"}`));
-  populateMultiSelect("#ownerFilter", dashboardData.performance.responsaveis_operacionais.map((row) => row.label));
-  populateMultiSelect("#unitFilter", dashboardData.performance.unidades.map((row) => row.unidade));
-  populateMultiSelect("#supplierFilter", dashboardData.performance.colaborador_unidade_fornecedor.map((row) => row.fornecedor));
-  populateMultiSelect("#manualUserFilter", dashboardData.performance.colaborador_unidade.map((row) => row.colaborador));
-  renderCollaboratorUnit();
+  renderActiveDetailView();
   updateStatusFilter(dashboardData.charts.status_gerencial);
 
   if (imp.warning_count) {
     showAlert(`${imp.warning_count} alerta(s) encontrados nesta importação: duplicidades, dados ausentes, atrasos ou inconsistências entre status e datas.`);
   } else {
     hideAlert();
+  }
+}
+
+function renderActiveDetailView() {
+  if (!dashboardData?.has_data) return;
+  const active = document.querySelector(".view.active")?.id || "overview";
+  if (active === "attendants") {
+    renderAttendantExecutive(dashboardData.performance.atendentes_executivo || []);
+  }
+  if (active === "suppliers") {
+    renderSupplierPerformance(dashboardData.performance.fornecedores);
+  }
+  if (active === "collabUnits") {
+    populateMultiSelect("#contractGroupFilter", dashboardData.performance.unidades.map((row) => `${row.grupo_contratual_codigo ? `${row.grupo_contratual_codigo} - ` : ""}${row.grupo_contratual_nome || "Não identificado"}`));
+    populateMultiSelect("#ownerFilter", dashboardData.performance.responsaveis_operacionais.map((row) => row.label));
+    populateMultiSelect("#unitFilter", dashboardData.performance.unidades.map((row) => row.unidade));
+    populateMultiSelect("#supplierFilter", dashboardData.performance.colaborador_unidade_fornecedor.map((row) => row.fornecedor));
+    populateMultiSelect("#manualUserFilter", dashboardData.performance.colaborador_unidade.map((row) => row.colaborador));
+    renderCollaboratorUnit();
+  }
+  if (active === "dashboard") {
+    renderBars("#chartStatusGerencial", dashboardData.charts.status_gerencial);
+    renderBars("#chartConfirmacao", dashboardData.charts.origem_confirmacao);
+    renderBars("#chartUnidades", dashboardData.charts.unidades);
+    renderBars("#chartResiduos", dashboardData.charts.residuos);
   }
 }
 
@@ -1672,7 +1715,7 @@ async function loadImports() {
       activateView("overview");
     });
   });
-  await loadDataSourceSummary();
+  if ($("#imports")?.classList.contains("active")) await loadDataSourceSummary();
   return payload.imports || [];
 }
 
@@ -1691,13 +1734,38 @@ async function loadDataSourceSummary() {
   if (!target) return;
   const official = (source.imports || []).filter((item) => item.source === "official");
   const local = (source.imports || []).filter((item) => item.source === "local");
+  const diag = source.diagnostics || {};
+  const clientDiag = diag.clientes || {};
+  const userDiag = diag.usuarios || {};
+  const waveDiag = diag.ondas || {};
   target.innerHTML = `
     <div class="source-meta">
       <article><span>Modo atual</span><strong>${source.source_label}</strong></article>
       <article><span>Origem dos dados</span><strong>${source.origin}</strong></article>
-      <article><span>Arquivos oficiais</span><strong>${official.length}</strong></article>
+      <article><span>Arquivos oficiais</span><strong>${diag.arquivos_carregados ?? official.length}</strong></article>
       <article><span>Análises locais</span><strong>${local.length}</strong></article>
     </div>
+    <section class="diagnostics-panel">
+      <h3>Diagnóstico da Base</h3>
+      <div class="source-meta">
+        <article><span>OS lidas</span><strong>${diag.os_lidas || 0}</strong></article>
+        <article><span>OS únicas</span><strong>${diag.os_unicas || 0}</strong></article>
+        <article><span>Linhas clientes</span><strong>${clientDiag.linhas_lidas || 0}</strong></article>
+        <article><span>Unidades com match cadastral</span><strong>${clientDiag.unidades_os_com_match || 0}</strong></article>
+        <article><span>Usuários humanos</span><strong>${userDiag.humanos_encontrados || 0}</strong></article>
+        <article><span>Sistêmicos ignorados</span><strong>${userDiag.sistemicos_ignorados || 0}</strong></article>
+        <article><span>Onda 0 unidades</span><strong>${waveDiag.onda_0_unidades || 0}</strong></article>
+        <article><span>Onda 1 unidades</span><strong>${waveDiag.onda_1_unidades || 0}</strong></article>
+      </div>
+      <div class="diagnostics-list">
+        <strong>Usuários identificados:</strong>
+        <span>${(userDiag.lista || []).slice(0, 18).join(", ") || "Nenhum usuário humano identificado."}</span>
+      </div>
+      <div class="diagnostics-list">
+        <strong>OS por onda:</strong>
+        <span>${(waveDiag.os_por_onda || []).map((row) => `${row.nome}: ${row.os} OS / ${row.unidades} unidades`).join(" · ") || "Nenhuma onda vinculada."}</span>
+      </div>
+    </section>
     <div class="table-wrap">
       <table>
         <thead>
@@ -1713,14 +1781,14 @@ async function loadDataSourceSummary() {
           </tr>
         </thead>
         <tbody>
-          ${(source.imports || []).map((item) => `
+          ${[...(source.imports || []), ...(source.client_imports || [])].map((item) => `
             <tr>
               <td title="${item.caminho || ""}">${item.arquivo || "-"}</td>
               <td>${item.source === "official" ? "Repositório GitHub" : "Cache local"}</td>
               <td>${item.tipo || "-"}</td>
               <td>${item.periodo || "-"}</td>
-              <td>${item.os_lidas || 0}</td>
-              <td>${item.os_unicas || 0}</td>
+              <td>${item.os_lidas ?? item.linhas_lidas ?? 0}</td>
+              <td>${item.os_unicas ?? item.unidades_identificadas ?? 0}</td>
               <td>${item.mudanca_status || 0}</td>
               <td>${pill(item.status || "-")}</td>
             </tr>
@@ -2026,8 +2094,11 @@ function wireEvents() {
   });
   $$(".nav").forEach((button) => button.addEventListener("click", () => {
     activateView(button.dataset.view);
+    renderActiveDetailView();
     if (button.dataset.view === "base") loadOrders().catch((error) => showAlert(error.message, "error"));
     if (button.dataset.view === "waves") loadWaves(true).catch((error) => showAlert(error.message, "error"));
+    if (button.dataset.view === "imports") loadImports().catch((error) => showAlert(error.message, "error"));
+    if (button.dataset.view === "settings") loadClientBase().catch((error) => showAlert(error.message, "error"));
   }));
   $("#fileInput").addEventListener("change", (event) => uploadFile(event.target));
   $("#uploadLocalAnalysis")?.addEventListener("click", () => $("#fileInput").click());
@@ -2284,12 +2355,8 @@ async function initApp() {
   try {
     await loadMeasurementSetup();
     await loadWaves(false);
-    const imports = await loadImports();
-    await loadClientBase();
-    if (window.sigraStaticApi && !scopeApplied && imports.some((item) => item.active)) {
-      scopeApplied = true;
-      currentImportId = "latest";
-      await loadDashboard("latest");
+    if (window.sigraStaticApi && !scopeApplied) {
+      showAlert("Selecione um período e clique em Filtrar, ou escolha uma importação na aba Importações SIGRA.");
     }
   } catch (error) {
     showAlert(error.message, "error");
@@ -2297,4 +2364,6 @@ async function initApp() {
 }
 
 initApp();
+
+
 

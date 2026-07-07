@@ -1,55 +1,22 @@
-﻿(() => {
+(() => {
   const DB_NAME = "sigra-confirmacao-coleta-pages";
-  const DB_VERSION = 6;
+  const DB_VERSION = 3;
   const ACTIVE = "Ativa";
   const PENDING = "Pendente de conferência";
-  const RULE_VERSION = "github-pages-v3-cache-memoria";
+  const RULE_VERSION = "github-pages-v1";
   const REQUIRED_COLUMNS = ["Número Ordem", "Nome Fantasia", "Data", "Data Agendada", "Data Realização", "Data Realizada"];
   const DATE_COLUMNS = ["Data", "Data Agendada", "Data Realização", "Data Realizada", "Data Não Realizada"];
-  let officialLoadPromise = null;
-  let officialMemory = null;
 
   const text = (value) => value === null || value === undefined ? "" : String(value).trim();
   const strip = (value) => text(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-  function localDateKey(value) {
-    if (!value) return "";
-    if (value instanceof Date && !Number.isNaN(value.getTime())) {
-      const y = value.getFullYear();
-      const m = String(value.getMonth() + 1).padStart(2, "0");
-      const d = String(value.getDate()).padStart(2, "0");
-      return `${y}-${m}-${d}`;
-    }
-    const raw = text(value);
-    const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-    const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (br) {
-      const year = br[3].length === 2 ? `20${br[3]}` : br[3];
-      return `${year}-${String(br[2]).padStart(2, "0")}-${String(br[1]).padStart(2, "0")}`;
-    }
-    const d = new Date(raw);
-    if (Number.isNaN(d.getTime())) return "";
-    return localDateKey(d);
-  }
-  const formatDateBR = (value) => {
-    const key = localDateKey(value);
-    if (!key) return "";
-    const [y, m, d] = key.split("-");
-    return `${d}/${m}/${y}`;
-  };
-  const dateLabel = formatDateBR;
-  const digits = (value) => text(value).replace(/\D/g, "");
-  const shortDoc = (value) => {
-    const doc = digits(value);
-    return doc.length > 14 ? doc.slice(-14) : doc;
-  };
+  const dateLabel = (value) => value ? new Date(value).toLocaleDateString("pt-BR") : "";
   const nowIso = () => new Date().toISOString();
   const uid = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
   function openDb() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = (event) => {
+      req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains("imports")) db.createObjectStore("imports", { keyPath: "id" });
         if (!db.objectStoreNames.contains("orders")) {
@@ -60,11 +27,6 @@
         if (!db.objectStoreNames.contains("clientImports")) db.createObjectStore("clientImports", { keyPath: "id" });
         if (!db.objectStoreNames.contains("clientUnits")) db.createObjectStore("clientUnits", { keyPath: "id" });
         if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "key" });
-        if (event.oldVersion && event.oldVersion < 6) {
-          ["imports", "orders", "clientImports", "clientUnits", "meta"].forEach((name) => {
-            if (db.objectStoreNames.contains(name)) req.transaction.objectStore(name).clear();
-          });
-        }
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -94,10 +56,7 @@
 
   async function getAll(storeName) {
     const db = await openDb();
-    const rows = await reqToPromise(db.transaction(storeName, "readonly").objectStore(storeName).getAll());
-    const officialRows = officialMemory?.[storeName] || [];
-    if (!officialRows.length) return rows;
-    return [...officialRows, ...rows.filter((row) => row.source === "local")];
+    return reqToPromise(db.transaction(storeName, "readonly").objectStore(storeName).getAll());
   }
 
   async function putMany(storeName, rows) {
@@ -162,35 +121,26 @@
     return { calendars, waves, unitLinks, summary };
   }
 
-  async function officialCache() {
-    return fetchJson("./data/cache/official-cache.json", null);
-  }
-
   async function processClientRows(rows, importMeta, source = "official") {
     const importId = importMeta.id || uid("clientes");
     const units = rows.map((row, idx) => {
       const groupRaw = text(row["Grupo Contratual"] || row["Código Grupo Contratual"] || row.Grupo || "");
       const codeMatch = groupRaw.match(/^\s*(\d+)/);
       const name = text(row["Nome Grupo Contratual"] || row["Nome do Grupo Contratual"] || row["Grupo Contratual Nome"] || groupRaw.replace(/^\d+\s*[-–]?\s*/, ""));
-      const cliente = text(row.Cliente || row["Nome/Razão Social"] || row["Nome/Razão Social Gerador"] || row["Nome Resumido"]);
-      const unidade = text(row["Nome Fantasia"] || row.Unidade || row.Estabelecimento || row["Nome Resumido"] || cliente);
       return {
         id: `${importId}-${idx}`,
         import_id: importId,
         source,
         grupo_contratual_codigo: codeMatch ? codeMatch[1] : "",
         grupo_contratual_nome: name || "Não identificado",
-        cliente,
+        cliente: text(row.Cliente || row["Nome/Razão Social"] || row["Nome/Razão Social Gerador"]),
         codigo_cliente: text(row["Código Cliente"] || row["Codigo Cliente"]),
-        cliente_documento: shortDoc(row["CPF/CNPJ"] || row.CNPJ || row.Documento),
-        unidade,
-        unidade_chave: strip(unidade),
-        cliente_chave: strip(cliente),
+        cliente_documento: text(row.CNPJ || row.Documento),
+        unidade: text(row["Nome Fantasia"] || row.Unidade || row.Estabelecimento),
         endereco: text(row["Endereço"] || row.Endereco || row.Logradouro),
-        cidade: text(row.Cidade || row["Município"] || row["Munícipio"]),
+        cidade: text(row.Cidade || row["Município"]),
         uf: text(row.UF || row.Estado),
-        status: text(row.Status) || "Ativo",
-        campos_mapeados: Object.keys(row).filter(Boolean),
+        status: "Ativo",
       };
     }).filter((row) => row.cliente || row.unidade || row.grupo_contratual_nome !== "Não identificado");
     await putMany("clientImports", [{
@@ -212,7 +162,6 @@
     const missing = REQUIRED_COLUMNS.filter((col) => !headers.includes(col));
     if (missing.length) throw new Error(`Campos obrigatórios ausentes em ${importMeta.arquivo_nome || importMeta.file_name}: ${missing.join(", ")}`);
     const clientUnits = await getAll("clientUnits");
-    const clientLookup = buildClientLookup(clientUnits);
     const importId = importMeta.id || uid("sigra");
     const importedAt = importMeta.incluido_em || nowIso();
     const osSeen = new Map();
@@ -226,16 +175,14 @@
       const transportador = text(raw.Transportador);
       const fornecedor = fornecedorOriginal || transportador;
       const cliente = text(raw["Nome/Razão Social Gerador"]);
-      const clienteDocumento = shortDoc(raw["CPF/CNPJ Gerador"]);
       const unidade = text(raw["Nome Fantasia"]);
-      const group = classifyContractGroup(cliente, unidade, clientLookup, clienteDocumento);
+      const group = classifyContractGroup(cliente, unidade, clientUnits);
       return {
         id: `${importId}-${idx}`,
         import_id: importId,
         source,
         numero_os: numero,
         cliente,
-        cliente_documento: clienteDocumento,
         ...group,
         unidade,
         regional: regionalFromUf(raw.UF),
@@ -293,39 +240,11 @@
   }
 
   async function loadOfficialBase(force = false) {
-    if (officialLoadPromise && !force) return officialLoadPromise;
-    officialLoadPromise = loadOfficialBaseInner(force).finally(() => {
-      officialLoadPromise = null;
-    });
-    return officialLoadPromise;
-  }
-
-  async function loadOfficialBaseInner(force = false) {
     if (!window.XLSX) throw new Error("Biblioteca de leitura de Excel não carregada. Verifique a conexão com a internet.");
     const manifest = await officialManifest();
-    const signature = JSON.stringify({ rule: RULE_VERSION, files: manifest.map((item) => [item.id, item.arquivo, item.status, item.incluido_em]) });
+    const signature = JSON.stringify(manifest.map((item) => [item.id, item.arquivo, item.status, item.incluido_em]));
     const meta = await getOne("meta", "officialLoaded").catch(() => null);
-    if (!force && officialMemory?.imports?.length && meta?.value === signature) return;
-    const cache = await officialCache();
-    const cacheSignature = typeof cache?.signature === "string" ? JSON.stringify(JSON.parse(cache.signature)) : "";
-    if (cacheSignature === signature && cache.orders) {
-      officialMemory = null;
-      const cachedClientImports = expandTable(cache.clientImports) || [];
-      const cachedClientUnits = expandTable(cache.clientUnits) || [];
-      const cachedImports = expandTable(cache.imports) || [];
-      const cachedOrders = expandTable(cache.orders) || [];
-      officialMemory = {
-        clientImports: cachedClientImports,
-        clientUnits: cachedClientUnits,
-        imports: cachedImports,
-        orders: cachedOrders,
-      };
-      await putMany("meta", [
-        { key: "officialLoaded", value: signature, loaded_at: nowIso(), cache_generated_at: cache.generated_at || "" },
-        { key: "dataMode", value: "official" },
-      ]);
-      return;
-    }
+    if (!force && meta?.value === signature && (await getAll("imports")).some((row) => row.source === "official")) return;
     await clearOfficialCache();
     const activeOfficial = manifest.filter((item) => strip(item.status) === "ATIVA");
     for (const item of activeOfficial.filter((row) => row.tipo === "cadastro_clientes")) {
@@ -352,18 +271,19 @@
 
   function parseDate(value) {
     if (!value) return "";
-    if (value instanceof Date && !Number.isNaN(value.getTime())) return localDateKey(value);
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
     if (typeof value === "number" && window.XLSX?.SSF) {
       const parsed = XLSX.SSF.parse_date_code(value);
-      if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
+      if (parsed) return new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, Math.floor(parsed.S || 0)).toISOString();
     }
     const raw = text(value);
     const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?/);
     if (br) {
       const year = Number(br[3].length === 2 ? `20${br[3]}` : br[3]);
-      return `${year}-${String(br[2]).padStart(2, "0")}-${String(br[1]).padStart(2, "0")}`;
+      return new Date(year, Number(br[2]) - 1, Number(br[1]), Number(br[4] || 0), Number(br[5] || 0)).toISOString();
     }
-    return localDateKey(raw);
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString();
   }
 
   function workbookRowsFromArrayBuffer(buffer) {
@@ -409,22 +329,15 @@
     return "Não informado";
   }
 
-  function classifyContractGroup(cliente, unidade, clientUnits = [], documento = "") {
+  function classifyContractGroup(cliente, unidade, clientUnits = []) {
     const key = strip(`${cliente} ${unidade}`);
-    const doc = shortDoc(documento);
-    const lookup = clientUnits?.byDoc ? clientUnits : buildClientLookup(clientUnits || []);
-    const match = (doc && lookup.byDoc.get(doc))
-      || lookup.byUnit.find((row) => row.unitKey && (key.includes(row.unitKey) || row.unitKey.includes(strip(unidade))))
-      || lookup.byClient.find((row) => row.clientKey && (key.includes(row.clientKey) || row.clientKey.includes(strip(cliente))));
+    const match = clientUnits.find((row) => strip(row.unidade) && key.includes(strip(row.unidade)))
+      || clientUnits.find((row) => strip(row.cliente) && key.includes(strip(row.cliente)));
     if (match) {
       return {
         grupo_contratual_codigo: text(match.grupo_contratual_codigo),
         grupo_contratual_nome: text(match.grupo_contratual_nome) || "Não identificado",
         grupo_contratual_fonte: "Base de Clientes / Grupos Contratuais",
-        cadastro_cliente_codigo: text(match.codigo_cliente),
-        cadastro_cliente_nome: text(match.cliente),
-        cadastro_unidade: text(match.unidade),
-        cadastro_documento_match: doc && shortDoc(match.cliente_documento) === doc ? "Sim" : "Não",
       };
     }
     if (key.includes("MERCADO LIVRE")) {
@@ -432,28 +345,9 @@
         grupo_contratual_codigo: "1490",
         grupo_contratual_nome: "Mercado Livre",
         grupo_contratual_fonte: "Regra automática: Mercado Livre",
-        cadastro_cliente_codigo: "",
-        cadastro_cliente_nome: "",
-        cadastro_unidade: "",
-        cadastro_documento_match: "Não",
       };
     }
-    return { grupo_contratual_codigo: "", grupo_contratual_nome: "Não identificado", grupo_contratual_fonte: "Sem regra cadastrada", cadastro_cliente_codigo: "", cadastro_cliente_nome: "", cadastro_unidade: "", cadastro_documento_match: "Não" };
-  }
-
-  function buildClientLookup(clientUnits = []) {
-    const byDoc = new Map();
-    const byUnit = [];
-    const byClient = [];
-    for (const row of clientUnits) {
-      const doc = shortDoc(row.cliente_documento);
-      if (doc && !byDoc.has(doc)) byDoc.set(doc, row);
-      const unitKey = strip(row.unidade);
-      const clientKey = strip(row.cliente);
-      if (unitKey) byUnit.push({ ...row, unitKey });
-      if (clientKey) byClient.push({ ...row, clientKey });
-    }
-    return { byDoc, byUnit, byClient };
+    return { grupo_contratual_codigo: "", grupo_contratual_nome: "Não identificado", grupo_contratual_fonte: "Sem regra cadastrada" };
   }
 
   function isMtr(row) {
@@ -464,19 +358,6 @@
   function isRobot(row) {
     const blob = strip(`${row["Usuário"] || ""} ${row["Solicitante"] || ""} ${row["Justificativa"] || ""} ${row["Observação"] || ""} ${row["Escopo"] || ""}`);
     return blob.includes("ROBO PROGRAMADA") || blob.includes("ROBO.PROGRAMADA") || blob.includes("AGENDADA AUTOMATICAMENTE");
-  }
-
-  function isSystemUser(value) {
-    const v = strip(value);
-    return !v || v.includes("CONFIRMACAO.COLETA") || v.includes("CONFIRMACAO COLETA") || v.includes("ROBO") || v.includes("ROBÔ");
-  }
-
-  function firstHumanUser(row, fields) {
-    for (const field of fields) {
-      const value = text(row[field]);
-      if (value && !isSystemUser(value)) return value;
-    }
-    return "";
   }
 
   function normalizeStatus(row) {
@@ -503,9 +384,9 @@
       origemConfirmacao = "Confirmada pelo fornecedor via MTR";
       responsavelConfirmacao = "Fornecedor via MTR";
     } else if (dataRealizada) {
-      responsavelConfirmacao = firstHumanUser(row, ["Usuário Realizada", "Usuário Aceita", "Usuário Agendada", "Usuário", "Solicitante"]) || "Atendente não identificado";
+      responsavelConfirmacao = text(row["Usuário Realizada"]) || text(row["Usuário"]);
       origemConfirmacao = responsavelConfirmacao ? "Confirmada pelo atendente" : "Confirmação sem atendente identificado";
-      produtividadeManual = responsavelConfirmacao && !isSystemUser(responsavelConfirmacao) ? "Sim" : "Não";
+      produtividadeManual = responsavelConfirmacao && !strip(responsavelConfirmacao).startsWith("ROBO") ? "Sim" : "Não";
     } else if (dataRealizacao) {
       origemConfirmacao = "Pendente de confirmação pelo atendente";
     }
@@ -533,14 +414,10 @@
       status_confirmacao: statusConfirmacao,
       origem_os: robo ? "Robô Programada" : "Sob demanda",
       processo_origem: viaMtr ? "Confirmação de Coleta pelo fornecedor via MTR" : (robo ? "Robô Programada" : "Sob demanda"),
-      responsavel_abertura: robo ? "Robô Programada" : (firstHumanUser(row, ["Usuário", "Usuário Agendada", "Usuário Aceita", "Solicitante"]) || "Atendente não identificado"),
+      responsavel_abertura: robo ? "Robô Programada" : text(row["Usuário"]),
       origem_confirmacao: origemConfirmacao,
       responsavel_confirmacao: responsavelConfirmacao,
       produtividade_manual: produtividadeManual,
-      usuario_aceita: text(row["Usuário Aceita"]),
-      usuario_agendada: text(row["Usuário Agendada"]),
-      usuario_realizada: text(row["Usuário Realizada"]),
-      usuario_sistemico_ignorado: isSystemUser(row["Usuário Realizada"]) || isSystemUser(row["Usuário"]) ? "Sim" : "Não",
       status_gerencial: statusGerencial,
       prazo: atrasoAg && atrasoRe ? "Atraso no agendamento e na realização" : atrasoAg ? "Atraso em agendamento" : atrasoRe ? "Atraso na realização" : "Sem atraso indicado",
       precisa_acao: precisaAcao ? "Sim" : "Não",
@@ -676,14 +553,13 @@
       ? await importsList().then((list) => list.filter((imp) => importIds.includes(imp.id)))
       : (await importsList()).filter((imp) => imp.status === ACTIVE && (imp.import_type || "Operacional") === "Operacional" && allowedSources.has(imp.source || "local"));
     const activeIds = new Set(imports.map((imp) => imp.id));
-    const importsById = new Map(imports.map((imp) => [imp.id, imp]));
     const orders = (await getAll("orders")).filter((row) => activeIds.has(row.import_id));
     const latestByOs = new Map();
     for (const row of orders) {
       const key = row.numero_os || row.id;
       const current = latestByOs.get(key);
-      const rowImport = importsById.get(row.import_id);
-      const currentImport = current ? importsById.get(current.import_id) : null;
+      const rowImport = imports.find((imp) => imp.id === row.import_id);
+      const currentImport = current ? imports.find((imp) => imp.id === current.import_id) : null;
       const rowDate = rowImport?.period_end || rowImport?.imported_at || row.import_id;
       const currentDate = currentImport?.period_end || currentImport?.imported_at || current?.import_id || "";
       if (!current || String(rowDate).localeCompare(String(currentDate)) >= 0) {
@@ -705,8 +581,8 @@
     let out = [...rows];
     const from = params.get("date_from");
     const to = params.get("date_to");
-    if (from) out = out.filter((row) => localDateKey(row.data_abertura) >= from);
-    if (to) out = out.filter((row) => localDateKey(row.data_abertura) <= to);
+    if (from) out = out.filter((row) => row.data_abertura && new Date(row.data_abertura) >= new Date(`${from}T00:00:00`));
+    if (to) out = out.filter((row) => row.data_abertura && new Date(row.data_abertura) <= new Date(`${to}T23:59:59`));
     return out;
   }
 
@@ -867,6 +743,7 @@
     const params = new URL(path, location.href).searchParams;
     const includeUnits = params.get("include_units") === "1";
     const { waves, unitLinks } = await officialConfig();
+    const rows = await activeScopedOrders();
     const activeLinks = unitLinks.filter((link) => strip(link.status || "ativa") !== "INATIVA");
     const wavesById = new Map(waves.map((wave) => [wave.id, {
       ...wave,
@@ -877,43 +754,6 @@
       objective: wave.objetivo || wave.objective || "",
       observations: wave.observacoes || wave.observations || "",
     }]));
-    if (!includeUnits) {
-      const lightWaves = [...wavesById.values()].map((wave) => {
-        const links = activeLinks.filter((link) => link.onda_id === wave.id);
-        return {
-          ...wave,
-          cliente: wave.cliente || "Não informado",
-          status: wave.status || "planejada",
-          competency_start_date: wave.data_inicio || wave.start_date || "",
-          competency_end_date: wave.data_fim_prevista || wave.planned_end_date || "",
-          baseline_status: "Planejado",
-          unidades: links.length,
-          unidades_ativas: links.length,
-          unidades_planejadas: links.length,
-          unidades_fora_escopo: 0,
-          progresso: 0,
-          total_os: 0,
-          confirmacoes_atendente: 0,
-          confirmacoes_mtr: 0,
-          pendencias_contingencia: 0,
-          nao_realizadas: 0,
-          precisam_acao: 0,
-          unidades_com_os: 0,
-          cobertura_confirmacao: 0,
-        };
-      });
-      return {
-        waves: lightWaves,
-        units: [],
-        units_total: activeLinks.length,
-        unlinked_units: [],
-        unlinked_units_total: 0,
-        out_of_scope_units: [],
-        out_of_scope_units_total: 0,
-        options: lightWaves.map((wave) => ({ id: wave.id, label: `${wave.wave_number ? `Onda ${wave.wave_number} · ` : ""}${wave.name}` })),
-      };
-    }
-    const rows = await activeScopedOrders();
     const normalizedWaves = [...wavesById.values()].map((wave) => {
       const links = activeLinks.filter((link) => link.onda_id === wave.id);
       const scopedRows = waveRows(rows, links);
@@ -999,45 +839,6 @@
     }).filter((row) => row.total > 0);
   }
 
-  function metricSnapshot(rows) {
-    const total = rows.length;
-    const manual = rows.filter((row) => row.produtividade_manual === "Sim").length;
-    const mtr = rows.filter((row) => row.origem_confirmacao === "Confirmada pelo fornecedor via MTR").length;
-    const pending = rows.filter(isPending).length;
-    const notDone = rows.filter((row) => row.status_gerencial === "Não realizada").length;
-    const confirmed = manual + mtr;
-    return {
-      total,
-      confirmadas: confirmed,
-      confirmacoes_atendente: manual,
-      confirmacoes_mtr: mtr,
-      pendencias_contingencia: pending,
-      nao_realizadas: notDone,
-      cobertura: total ? Math.round((confirmed / total) * 1000) / 10 : 0,
-    };
-  }
-
-  async function baselineComparison(currentRows) {
-    const imports = await importsList();
-    const baselineImports = imports.filter((imp) => imp.status === ACTIVE && (imp.import_type || "") === "Baseline");
-    if (!baselineImports.length) return null;
-    const baselineIds = new Set(baselineImports.map((imp) => imp.id));
-    const baselineRows = (await getAll("orders")).filter((row) => baselineIds.has(row.import_id));
-    if (!baselineRows.length || !currentRows.length) return null;
-    const baseline = metricSnapshot(baselineRows);
-    const current = metricSnapshot(currentRows);
-    return {
-      baseline,
-      current,
-      baseline_label: `${baselineImports[0].period_start_label || dateLabel(baselineImports[0].period_start)} a ${baselineImports[0].period_end_label || dateLabel(baselineImports[0].period_end)}`,
-      current_label: "Período atual",
-      variation_pp: Math.round((current.cobertura - baseline.cobertura) * 10) / 10,
-      variation_attendant: current.confirmacoes_atendente - baseline.confirmacoes_atendente,
-      variation_mtr: current.confirmacoes_mtr - baseline.confirmacoes_mtr,
-      variation_pending: current.pendencias_contingencia - baseline.pendencias_contingencia,
-    };
-  }
-
   async function dashboard(path) {
     const params = new URL(path, location.href).searchParams;
     const importId = params.get("import_id") || "latest";
@@ -1117,7 +918,6 @@
         residuos: groupCount(rows, "tipo_residuo"),
         motivos: groupCount(rows, "motivo_nao_realizacao"),
         coverage_history: await coverageHistory(),
-        baseline_comparison: await baselineComparison(rows),
       },
       performance: {
         atendentes: summarize(rows.filter((r) => r.produtividade_manual === "Sim"), "responsavel_confirmacao"),
@@ -1175,27 +975,22 @@
       const groupRaw = text(row["Grupo Contratual"] || row["Código Grupo Contratual"] || row.Grupo || "");
       const codeMatch = groupRaw.match(/^\s*(\d+)/);
       const name = text(row["Nome Grupo Contratual"] || row["Nome do Grupo Contratual"] || row["Grupo Contratual Nome"] || groupRaw.replace(/^\d+\s*[-–]?\s*/, ""));
-      const cliente = text(row.Cliente || row["Nome/Razão Social"] || row["Nome/Razão Social Gerador"] || row["Nome Resumido"]);
-      const unidade = text(row["Nome Fantasia"] || row.Unidade || row.Estabelecimento || row["Nome Resumido"] || cliente);
       return {
         id: `${importId}-${idx}`,
         import_id: importId,
-        source: "local",
         grupo_contratual_codigo: codeMatch ? codeMatch[1] : "",
         grupo_contratual_nome: name || "Não identificado",
-        cliente,
+        cliente: text(row.Cliente || row["Nome/Razão Social"] || row["Nome/Razão Social Gerador"]),
         codigo_cliente: text(row["Código Cliente"] || row["Codigo Cliente"]),
-        cliente_documento: shortDoc(row["CPF/CNPJ"] || row.CNPJ || row.Documento),
-        unidade,
-        unidade_chave: strip(unidade),
-        cliente_chave: strip(cliente),
+        cliente_documento: text(row.CNPJ || row.Documento),
+        unidade: text(row["Nome Fantasia"] || row.Unidade || row.Estabelecimento),
         endereco: text(row["Endereço"] || row.Endereco || row.Logradouro),
-        cidade: text(row.Cidade || row["Município"] || row["Munícipio"]),
+        cidade: text(row.Cidade || row["Município"]),
         uf: text(row.UF || row.Estado),
-        status: text(row.Status) || "Ativo",
+        status: "Ativo",
       };
     }).filter((row) => row.cliente || row.unidade || row.grupo_contratual_nome !== "Não identificado");
-    await putMany("clientImports", [{ id: importId, source: "local", file_name: file.name, imported_at: nowIso(), row_count: rows.length, valid_count: units.length, unidentified_count: units.filter((u) => u.grupo_contratual_nome === "Não identificado").length, status: "Ativa" }]);
+    await putMany("clientImports", [{ id: importId, file_name: file.name, imported_at: nowIso(), row_count: rows.length, valid_count: units.length, unidentified_count: units.filter((u) => u.grupo_contratual_nome === "Não identificado").length, status: "Ativa" }]);
     await putMany("clientUnits", units);
     return { ok: true };
   }
@@ -1216,55 +1011,13 @@
   async function dataSourceSummary() {
     const imports = await importsList();
     const orders = await getAll("orders");
-    const clientImports = await getAll("clientImports");
-    const clientUnits = await getAll("clientUnits");
     const mode = await dataMode();
     const meta = await getOne("meta", "officialLoaded").catch(() => null);
-    const matchedByClientBase = orders.filter((row) => row.grupo_contratual_fonte === "Base de Clientes / Grupos Contratuais").length;
-    const plausibleUser = (value) => {
-      const raw = text(value);
-      const v = strip(raw);
-      return raw && !isSystemUser(raw) && raw !== "Fornecedor via MTR" && raw !== "Robô Programada" && raw !== "Atendente não identificado"
-        && !/\d{2}\.\d{3}\.\d{3}\//.test(raw) && !/\d{8,}/.test(raw)
-        && !/(ADMINISTRADOR ADMIN| LTDA| S\/A| SOCIEDADE| COMERCIO| TRANSPORTE| RESIDUOS| AMBIENTAL| AMBIENSYS| CNPJ)/.test(v);
-    };
-    const humanUsers = new Set(orders.flatMap((row) => [row.responsavel_confirmacao, row.responsavel_abertura])
-      .filter(plausibleUser));
-    const systemIgnored = orders.filter((row) => [row.usuario_realizada, row.usuario_responsavel, row.atendente_vinculado, row.responsavel_confirmacao, row.responsavel_abertura].some((value) => text(value) && isSystemUser(value))).length;
-    const { waves, unitLinks } = await officialConfig();
-    const waveDiag = await wavesSummary("/api/waves?include_units=1");
     return {
       mode,
       source_label: sourceLabel(mode),
       official_loaded_at: meta?.loaded_at || "",
       origin: mode === "official" ? "Repositório GitHub" : mode === "official-local" ? "Repositório GitHub + Cache local" : "Cache local",
-      diagnostics: {
-        arquivos_carregados: imports.length + clientImports.length,
-        os_lidas: orders.length,
-        os_unicas: new Set(orders.map((row) => row.numero_os).filter(Boolean)).size,
-        clientes: {
-          importacoes: clientImports.length,
-          linhas_lidas: clientImports.reduce((sum, row) => sum + Number(row.row_count || 0), 0),
-          unidades_cadastrais: clientUnits.length,
-          unidades_os_com_match: matchedByClientBase,
-          unidades_os_sem_match: Math.max(0, orders.length - matchedByClientBase),
-          campos_mapeados: clientUnits[0]?.campos_mapeados || ["Grupo Contratual", "Código Cliente", "CPF/CNPJ", "Nome/Razão Social", "Nome Resumido", "Status", "Endereço", "Munícipio", "UF"],
-        },
-        usuarios: {
-          humanos_encontrados: humanUsers.size,
-          lista: [...humanUsers].sort(),
-          sistemicos_ignorados: systemIgnored,
-          os_sem_usuario: orders.filter((row) => row.responsavel_abertura === "Atendente não identificado" || row.responsavel_confirmacao === "Atendente não identificado").length,
-        },
-        ondas: {
-          ondas_configuradas: waves.length,
-          vinculos_configurados: unitLinks.length,
-          onda_0_unidades: unitLinks.filter((row) => row.onda_id === "onda-0-pr01").length,
-          onda_1_unidades: unitLinks.filter((row) => row.onda_id === "onda-1-ampliacao").length,
-          unidades_sem_onda: waveDiag.unlinked_units_total,
-          os_por_onda: waveDiag.waves.map((wave) => ({ id: wave.id, nome: wave.name, unidades: wave.unidades, os: wave.total_os, cobertura: wave.cobertura_confirmacao })),
-        },
-      },
       imports: imports.map((imp) => {
         const rows = orders.filter((row) => row.import_id === imp.id);
         const byOs = new Map();
@@ -1288,15 +1041,6 @@
           mudanca_status: changed,
         };
       }),
-      client_imports: clientImports.map((item) => ({
-        id: item.id,
-        arquivo: item.file_name,
-        source: item.source || "local",
-        tipo: "cadastro_clientes",
-        linhas_lidas: item.row_count || 0,
-        unidades_identificadas: item.valid_count || 0,
-        status: item.status,
-      })),
     };
   }
 
@@ -1309,12 +1053,8 @@
   }
 
   async function staticApi(path, options = {}) {
+    await loadOfficialBase(false);
     const method = (options.method || "GET").toUpperCase();
-    const params = new URL(path, location.href).searchParams;
-    const lightweight = path.startsWith("/api/data-mode")
-      || path.startsWith("/api/measurement")
-      || (path.startsWith("/api/waves") && params.get("include_units") !== "1" && method === "GET");
-    if (!lightweight) await loadOfficialBase(false);
     if (path.startsWith("/api/data-source")) return dataSourceSummary();
     if (path.startsWith("/api/data-mode")) {
       if (method === "POST") {
@@ -1365,6 +1105,3 @@
 
   window.sigraStaticApi = staticApi;
 })();
-
-
-

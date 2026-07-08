@@ -723,19 +723,47 @@ function renderOverviewComposition(kpis = {}) {
   const explained = manual + mtr + pending + notDone;
   const other = Math.max(0, total - explained);
   const rows = [
-    ["Confirmações do Atendente", manual, "attendant"],
-    ["Fornecedor via MTR", mtr, "mtr"],
-    ["Pendências de Contingência", pending, "pending"],
-    ["Não realizadas", notDone, "danger"],
+    ["Confirmacoes do Atendente", manual, "attendant", "Acao humana registrada no SIGRA"],
+    ["Fornecedor via MTR", mtr, "mtr", "Confirmacao feita pelo fornecedor pelo link da MTR"],
+    ["Pendencias de Contingencia", pending, "pending", "Sem confirmacao do fornecedor e sem acao do atendente"],
+    ["Nao realizadas", notDone, "danger", "Coletas marcadas como nao realizadas"],
   ];
-  if (other) rows.push(["Agendadas/em aberto", other, "neutral"]);
-  target.innerHTML = rows.map(([label, value, klass]) => `
-    <div class="composition-row">
-      <span>${label}</span>
-      <div class="mini-track"><b class="${klass}" style="width:${Math.max(2, Math.min(100, Number(pct(value, total))))}%"></b></div>
-      <strong>${value} <small>${pct(value, total)}%</small></strong>
+  if (other) rows.push(["Agendadas/em aberto", other, "neutral", "OS ainda nao explicadas pelas categorias principais"]);
+  const dominant = [...rows].sort((a, b) => Number(b[1]) - Number(a[1]))[0] || ["Sem dados", 0, "neutral", ""];
+  const confirmed = manual + mtr;
+  const coverage = pct(confirmed, total);
+  const pendingRate = pct(pending, total);
+  target.innerHTML = `
+    <div class="composition-hero">
+      <div class="composition-center">
+        <span>Cobertura</span>
+        <strong>${coverage}%</strong>
+        <small>${confirmed} confirmadas de ${total}</small>
+      </div>
+      <div class="composition-stack" aria-label="Composicao da confirmacao">
+        ${rows.map(([label, value, klass, help]) => `
+          <button type="button" class="${klass}" style="width:${Math.max(2, Math.min(100, Number(pct(value, total))))}%"
+            title="${label}: ${value} OS (${pct(value, total)}%). ${help}">
+            <span>${label}</span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="composition-insight">
+        <b>${dominant[0]}</b>
+        <span>Maior fatia da composicao: ${dominant[1]} OS (${pct(dominant[1], total)}%).</span>
+        <em>${pendingRate}% da base esta em contingencia.</em>
+      </div>
     </div>
-  `).join("");
+    <div class="composition-cards">
+      ${rows.map(([label, value, klass, help]) => `
+        <button type="button" class="composition-card ${klass}" title="${help}">
+          <span>${label}</span>
+          <strong>${value}</strong>
+          <small>${pct(value, total)}%</small>
+        </button>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderOverviewPriorities(kpis = {}) {
@@ -746,25 +774,30 @@ function renderOverviewPriorities(kpis = {}) {
   const pendingUnits = [...units].sort((a, b) => Number(b.pendentes_confirmacao || 0) - Number(a.pendentes_confirmacao || 0));
   const alerts = [
     {
-      title: "Maior pendência",
-      detail: pendingUnits[0] ? `${pendingUnits[0].unidade} · ${pendingUnits[0].pendentes_confirmacao} pendência(s)` : "Sem pendências por unidade",
+      title: "Maior pendencia",
+      detail: pendingUnits[0] ? `${pendingUnits[0].unidade} - ${pendingUnits[0].pendentes_confirmacao} pendencia(s)` : "Sem pendencias por unidade",
       severity: Number(pendingUnits[0]?.pendentes_confirmacao || 0) ? "Alta" : "Baixa",
+      tone: Number(pendingUnits[0]?.pendentes_confirmacao || 0) ? "high" : "low",
     },
     {
-      title: "Maior volume que precisa de ação",
-      detail: actionUnits[0] ? `${actionUnits[0].unidade} · ${actionUnits[0].precisam_acao} item(ns)` : "Sem itens críticos",
-      severity: Number(actionUnits[0]?.precisam_acao || 0) ? "Média" : "Baixa",
+      title: "Maior volume que precisa de acao",
+      detail: actionUnits[0] ? `${actionUnits[0].unidade} - ${actionUnits[0].precisam_acao} item(ns)` : "Sem itens criticos",
+      severity: Number(actionUnits[0]?.precisam_acao || 0) ? "Media" : "Baixa",
+      tone: Number(actionUnits[0]?.precisam_acao || 0) ? "mid" : "low",
     },
     {
-      title: "Inconsistências",
-      detail: `${kpis.alertas ?? 0} alerta(s) sinalizado(s)`,
-      severity: Number(kpis.alertas || 0) ? "Média" : "Baixa",
+      title: "Alertas tecnicos da importacao",
+      detail: `${kpis.alertas ?? 0} ocorrencia(s) de validacao` ,
+      severity: Number(kpis.alertas || 0) ? "Media" : "Baixa",
+      tone: Number(kpis.alertas || 0) ? "mid" : "low",
     },
   ];
   target.innerHTML = alerts.map((item) => `
-    <article>
-      <span>${item.title}</span>
-      <strong>${item.detail}</strong>
+    <article class="${item.tone}">
+      <div>
+        <span>${item.title}</span>
+        <strong title="${item.detail}">${item.detail}</strong>
+      </div>
       <em>${item.severity}</em>
     </article>
   `).join("");
@@ -810,7 +843,7 @@ async function loadDashboard(importId = currentImportId) {
   updateStatusFilter(dashboardData.charts.status_gerencial);
 
   if (imp.warning_count) {
-    showAlert(`${imp.warning_count} alerta(s) encontrados nesta importação: duplicidades, dados ausentes, atrasos ou inconsistências entre status e datas.`);
+    showAlert(`${imp.warning_count} ocorrencia(s) tecnica(s) de validacao nesta importacao. Isso pode incluir duplicidades, campos ausentes, atrasos ou inconsistencias; nao significa necessariamente ${imp.warning_count} OS criticas.`);
   } else {
     hideAlert();
   }
